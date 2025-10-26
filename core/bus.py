@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any
 from core.notify import notify_pushover
 from core.analysis import Analyzer, summarize_trade
 
+
 @dataclass
 class Event:
     source: str
@@ -56,8 +57,10 @@ def make_publisher(cfg, state):
         for t in decision.get("tickers", []):
             sym, act = t.get("symbol", "?"), t.get("action", "HOLD")
             line = f"{sym}: {act}"
-            if t.get("strike"): line += f" @ ${t['strike']}"
-            if t.get("expiration"): line += f" ({t['expiration']})"
+            if t.get("strike"):
+                line += f" @ ${t['strike']}"
+            if t.get("expiration"):
+                line += f" ({t['expiration']})"
             parts.append(line)
         return "\n".join(parts) or "Signal generated — check details notification"
 
