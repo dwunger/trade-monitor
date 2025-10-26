@@ -453,3 +453,66 @@ class Analyzer:
                 decision["escalated"] = True
 
         return decision
+    
+    def analyze_macro(self, content: str, state=None) -> Dict[str, Any]:
+        """
+        Analyze official macroeconomic reports (e.g., CPI, PPI, NFP).
+        Used by the BLS RSS monitor.
+        """
+        content = (content or "").strip()
+        if not content:
+            return {
+                "analysis": "No data content received.",
+                "sentiment": "neutral",
+                "confidence": 0.4,
+                "tickers": [],
+                "needs_search": False,
+                "sources": [],
+                "priority": 0,
+            }
+
+        system_msg = (
+            "You are a macroeconomic analyst. You are receiving raw data from official "
+            "Bureau of Labor Statistics (BLS) releases — CPI, PPI, and NFP. "
+            "Determine how these reports influence U.S. Treasuries and interest rates. "
+            "Focus on ETFs like TLT, IEF, and ZROZ.\n\n"
+            "Output a concise professional summary with trade recommendations and reasoning. "
+            "Use clear cause-effect language. "
+            "Return JSON with fields: analysis, sentiment, confidence, tickers, sources, priority."
+        )
+
+        print(f"[anthropic] macro request → model={self.cfg['MODEL']} | url=None")
+
+        try:
+            r1 = self._messages_create_safe(
+                model=self.cfg["MODEL"],
+                max_tokens=8192,
+                system=system_msg,
+                tools=[],
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"Analyze the following economic reports collectively:\n\n{content}\n\n"
+                                   "Return concise analysis and trade recommendations on Treasuries (e.g. TLT)."
+                    }
+                ],
+            )
+        except Exception as e:
+            print(f"[anthropic] macro analysis failed: {e}")
+            return {
+                "analysis": f"Macro analysis failed: {e}",
+                "sentiment": "neutral",
+                "confidence": 0.0,
+                "tickers": [],
+                "needs_search": False,
+                "sources": [],
+                "priority": 0,
+            }
+
+        assistant_text = _extract_text_from_response(r1)
+        decision = self._shape_to_json(
+            self.cfg["MODEL"],
+            assistant_text,
+            sorted(self.cfg["TICKER_WHITELIST"]) if self.cfg["TICKER_WHITELIST"] else None,
+        )
+        return decision
