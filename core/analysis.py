@@ -458,13 +458,16 @@ class Analyzer:
         """
         Analyze official macroeconomic reports (e.g., CPI, PPI, NFP).
         Used by the BLS RSS monitor.
+
+        Extended thinking is enabled here (config-driven) to improve reasoning
+        on infrequent, high-impact monthly releases.
         """
         content = (content or "").strip()
         if not content:
             return {
-                "analysis": "No data content received.",
+                "analysis": "No content to analyze.",
                 "sentiment": "neutral",
-                "confidence": 0.4,
+                "confidence": 0.0,
                 "tickers": [],
                 "needs_search": False,
                 "sources": [],
@@ -475,32 +478,56 @@ class Analyzer:
             "You are a macroeconomic analyst. You are receiving raw data from official "
             "Bureau of Labor Statistics (BLS) releases — CPI, PPI, and NFP. "
             "Determine how these reports influence U.S. Treasuries and interest rates. "
-            "Focus on ETFs like TLT, IEF, and ZROZ.\n\n"
+            "Focus on treasury ETFs like TLT.\n\n"
             "Output a concise professional summary with trade recommendations and reasoning. "
             "Use clear cause-effect language. "
             "Return JSON with fields: analysis, sentiment, confidence, tickers, sources, priority."
         )
 
-        print(f"[anthropic] macro request → model={self.cfg['MODEL']} | url=None")
+        # --- Extended thinking config (macro only) ---
+        if self.cfg.get("EXT_THINKING_ENABLED"):
+            try:
+                budget = int(self.cfg.get("EXT_THINKING_BUDGET_TOKENS", 8000))
+            except Exception:
+                budget = 8000
+            try:
+                max_tokens = int(self.cfg.get("EXT_THINKING_MAX_TOKENS", 16000))
+            except Exception:
+                max_tokens = 16000
+            # Claude requires budget < max_tokens; keep a safe gap
+            if max_tokens <= 1000:
+                max_tokens = 2000
+            if budget >= max_tokens:
+                budget = max_tokens - 1000
+            thinking_kwargs = {
+                "thinking": {"type": "enabled", "budget_tokens": budget},
+                "max_tokens": max_tokens,
+            }
+        else:
+            thinking_kwargs = {"max_tokens": 8192}
 
+        print(f"[anthropic] macro request → model={self.cfg['MODEL']} | thinking={'on' if 'thinking' in thinking_kwargs else 'off'}")
+
+        # NOTE: No web tools here — inputs are the BLS payloads bundled by the monitor.
         try:
             r1 = self._messages_create_safe(
                 model=self.cfg["MODEL"],
-                max_tokens=8192,
                 system=system_msg,
                 tools=[],
-                messages=[
-                    {
-                        "role": "user",
-                        "content": f"Analyze the following economic reports collectively:\n\n{content}\n\n"
-                                   "Return concise analysis and trade recommendations on Treasuries (e.g. TLT)."
-                    }
-                ],
+                messages=[{
+                    "role": "user",
+                    "content": (
+                        "Analyze the following economic reports collectively:\n\n"
+                        f"{content}\n\n"
+                        "Return concise analysis and trade recommendations on Treasuries (e.g. TLT)."
+                    ),
+                }],
+                **thinking_kwargs,
             )
         except Exception as e:
             print(f"[anthropic] macro analysis failed: {e}")
             return {
-                "analysis": f"Macro analysis failed: {e}",
+                "analysis": f"Analysis failed: {str(e)[:200]}",
                 "sentiment": "neutral",
                 "confidence": 0.0,
                 "tickers": [],
@@ -510,9 +537,11 @@ class Analyzer:
             }
 
         assistant_text = _extract_text_from_response(r1)
+        # Keep your existing shaping/JSON conversion exactly as before:
         decision = self._shape_to_json(
             self.cfg["MODEL"],
             assistant_text,
-            sorted(self.cfg["TICKER_WHITELIST"]) if self.cfg["TICKER_WHITELIST"] else None,
+            sorted(self.cfg["TICKER_WHITELIST"]) if self.cfg.get("TICKER_WHITELIST") else None,
         )
+
         return decision

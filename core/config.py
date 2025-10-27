@@ -13,6 +13,13 @@ def get_config():
             os.getenv("REASONING_FALLBACK_3", "claude-haiku-4-5-20251001"),
         ],
 
+        # Extended thinking (used only for macro/BLS analyses)
+        "EXT_THINKING_ENABLED": os.getenv("EXT_THINKING_ENABLED", "true").lower() in ("1", "true", "yes"),
+        # Keep budget < max_tokens you send in the request
+        "EXT_THINKING_BUDGET_TOKENS": int(os.getenv("EXT_THINKING_BUDGET_TOKENS", "8000")),
+        # Max tokens for macro requests (must be > budget)
+        "EXT_THINKING_MAX_TOKENS": int(os.getenv("EXT_THINKING_MAX_TOKENS", "16000")),
+
         # Truth Social
         "TRUTH_HANDLE": os.getenv("TRUTH_HANDLE", "realDonaldTrump"),
 
