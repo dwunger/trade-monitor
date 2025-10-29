@@ -177,14 +177,21 @@ def _compose_prompt(bundle: Dict[str, dict]) -> str:
 # CES (NFP)
 # --------------------------------------------------------------------
 def _fetch_latest_nfp() -> tuple[Optional[str], Optional[dict]]:
-    """Fetch CES0000000001 lines only, last 12 months."""
+    """
+    Fetch CES0000000001 — total nonfarm, seasonally adjusted.
+    Adds momentum, trend strength, and policy signal context.
+    """
     try:
         r = requests.get(CES_TOTAL_URL, headers={"User-Agent": UA}, timeout=30)
         r.raise_for_status()
+
+        # Filter only CES0000000001 lines
         lines = [ln.strip() for ln in r.text.splitlines() if ln.strip().startswith(CES_SERIES_ID)]
         if not lines:
             print("[bls_rss] no CES0000000001 lines found in file")
             return None, None
+
+        # Last 12 months
         tail = lines[-12:]
         records: List[Tuple[str, int]] = []
         for ln in tail:
@@ -200,26 +207,68 @@ def _fetch_latest_nfp() -> tuple[Optional[str], Optional[dict]]:
             except Exception:
                 continue
             records.append((f"{year}-{month:02d}", val))
-        if not records:
+        if len(records) < 6:
             return None, None
-        latest_ym = records[-1][0]
+
+        # --- Derived metrics ---
+        vals = [v for _, v in records]
+        months = [d for d, _ in records]
+        latest_ym, latest_val = months[-1], vals[-1]
+        prev_val = vals[-2]
+        mom_change = latest_val - prev_val
+
+        # 3- and 6-month averages of monthly changes
+        deltas = [b - a for a, b in zip(vals[:-1], vals[1:])]
+        avg3 = sum(deltas[-3:]) / 3
+        avg6 = sum(deltas[-6:]) / 6
+        momentum = avg3 - avg6
+
+        # Trend classification
+        if avg3 > 250 and momentum > 0:
+            trend = "STRONG"
+        elif avg3 > 150:
+            trend = "MODERATE"
+        elif avg3 > 50:
+            trend = "SLOWING"
+        else:
+            trend = "WEAK"
+
+        # Fed policy interpretation
+        if trend in ("STRONG", "MODERATE") and momentum > 0:
+            fed_signal = "Labor market still hot → cuts less likely near term."
+        elif trend in ("SLOWING", "WEAK") and momentum < 0:
+            fed_signal = "Hiring momentum cooling → supports dovish bias."
+        else:
+            fed_signal = "Automated evaluation not available."
+
         guid = f"NFP-{latest_ym.replace('-', '')}"
-        delta_val = records[-1][1] - records[-2][1] if len(records) >= 2 else 0
+
+        summary_text = (
+            f"Nonfarm payrolls trend ({latest_ym}): {trend}\n"
+            f"3-mo avg change: {avg3:,.0f}k | 6-mo avg: {avg6:,.0f}k | Momentum: {momentum:+.0f}k\n"
+            f"Latest change: {mom_change:+,}k (prior {prev_val:,} → {latest_val:,})\n"
+            f"Fed interpretation: {fed_signal}"
+        )
+
+        # Package last 6 months for LLM visibility
+        last6 = records[-6:]
+        data_fmt = [f"{m}: {v:,}" for m, v in last6]
+
         payload = {
-            "title": "Nonfarm Payroll Employment (CES0000000001, SA)",
+            "title": "Nonfarm Payroll Employment — Trend Analysis (CES0000000001, SA)",
             "link": CES_TOTAL_URL,
             "published": dt.datetime.utcnow().isoformat() + "Z",
             "guid": guid,
-            "data": records,
-            "full_text": (
-                f"Total nonfarm employment (seasonally adjusted): {records[-1][1]} (thousands) "
-                f"for {latest_ym}. Prior: {records[-2][1]} (Δ {delta_val:+d})."
-            ),
+            "data": data_fmt,
+            "full_text": summary_text,
         }
+
         return guid, payload
+
     except Exception as e:
         print(f"[bls_rss] failed to fetch CES NFP: {e}")
         return None, None
+
 
 # --------------------------------------------------------------------
 # Schedule utilities
