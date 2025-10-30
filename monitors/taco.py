@@ -1,14 +1,13 @@
 """
 TACO Monitor: Trump Always Chickens Out
 Uses Haiku for cheap, intelligent screening of tariff-related posts.
-Focuses on PUT options for the drop (real money) and CALLS for the rebound.
 """
 import os, re, time, inspect
 from typing import Optional
 from .base import Monitor
 from core.bus import Event
 
-VERSION = "taco/2.1.0"
+VERSION = "taco/2.1.0-feeds"
 print(f"[taco] module file → {inspect.getfile(inspect.currentframe())}", flush=True)
 
 class Monitor(Monitor):
@@ -23,7 +22,6 @@ class Monitor(Monitor):
         except Exception as e:
             raise RuntimeError(f"truthbrush module not available: {e}")
         
-        # Import Anthropic for Haiku screening
         try:
             from anthropic import Anthropic
             self.anthropic = Anthropic(api_key=config["ANTHROPIC_API_KEY"])
@@ -35,9 +33,30 @@ class Monitor(Monitor):
         self.screening_model = os.getenv("TACO_SCREENING_MODEL", "claude-haiku-4-5-20251001")
         self.state = ctx.get("state")
         self.state_key_last = "taco:last_seen_id"
-        self.config = config  # Store config for rate limit delay
+        self.config = config
+        
+        # For smart console output
+        self._last_console_line_len = 0
         
         print(f"[taco] initialized for @{self.handle} | poll={self.poll_seconds}s | screening={self.screening_model}", flush=True)
+        
+        # Log to feed
+        self.feed.log(f"Monitor initialized for @{self.handle}", subclass="lifecycle")
+        self.feed.log(f"Screening model: {self.screening_model}", subclass="config")
+    
+    def _print_updating(self, message: str):
+        """Print a message that updates in place"""
+        if self._last_console_line_len > 0:
+            print('\r' + ' ' * self._last_console_line_len + '\r', end='', flush=True)
+        print(f"[taco] {message}", end='', flush=True)
+        self._last_console_line_len = len(f"[taco] {message}")
+
+    def _print_newline(self, message: str):
+        """Print a message on a new line"""
+        if self._last_console_line_len > 0:
+            print('\r' + ' ' * self._last_console_line_len + '\r', end='', flush=True)
+            self._last_console_line_len = 0
+        print(f"[taco] {message}", flush=True)
     
     def _strip_html(self, s: str) -> str:
         if not s:
@@ -47,12 +66,9 @@ class Monitor(Monitor):
         return re.sub(r"\s+", " ", s).strip()
     
     def _screen_with_haiku(self, text: str) -> dict:
-        """
-        Use Haiku to intelligently screen if post is tariff-related.
-        Cost: ~$0.0001 per post (cheap!)
-        Returns: {"is_tariff_related": bool, "confidence": float, "reasoning": str}
-        """
+        """Use Haiku to intelligently screen if post is tariff-related."""
         try:
+            t0 = time.time()
             response = self.anthropic.messages.create(
                 model=self.screening_model,
                 max_tokens=200,
@@ -64,7 +80,9 @@ class Monitor(Monitor):
                 }]
             )
             
-            # Extract text from response
+            duration = time.time() - t0
+            
+            # Extract text
             response_text = ""
             for block in response.content:
                 if hasattr(block, 'type') and block.type == 'text':
@@ -72,29 +90,48 @@ class Monitor(Monitor):
             
             # Parse JSON
             import json
-            # Strip markdown if present
             response_text = response_text.strip()
             if response_text.startswith("```"):
                 response_text = re.sub(r"^```[a-zA-Z]*\s*", "", response_text)
                 response_text = re.sub(r"\s*```$", "", response_text)
             
             result = json.loads(response_text)
+            
+            # Log to feed
+            tokens = response.usage.input_tokens + response.usage.output_tokens
+            cost = tokens * 0.25 / 1_000_000  # Haiku pricing
+            
+            self.feed.log_api_call(
+                provider="anthropic",
+                model=self.screening_model,
+                tokens=tokens,
+                cost=cost,
+                duration=duration,
+                subclass="screening"
+            )
+            
             return result
+            
         except Exception as e:
-            print(f"[taco] Haiku screening error: {e}", flush=True)
+            self._print_newline(f"Haiku screening error: {e}")
+            self.feed.error("Screening failed", exception=e, subclass="screening")
             # Fallback to simple keyword check
             text_lower = text.lower()
             is_related = any(kw in text_lower for kw in ["tariff", "trade war", "trade deal"])
             return {"is_tariff_related": is_related, "confidence": 0.5, "reasoning": "fallback"}
     
     def run(self) -> None:
-        print(f"[taco] RUN START — {VERSION}", flush=True)
+        self._print_newline(f"RUN START – {VERSION}")
+        self.feed.log(f"Monitor starting – {VERSION}", subclass="lifecycle")
+        
         last_seen: Optional[str] = self.state.get(self.state_key_last, default=None)
-        print(f"[taco] monitoring @{self.handle} for tariff posts | last_seen={last_seen}", flush=True)
+        self._print_newline(f"Monitoring @{self.handle} for tariff posts | last_seen={last_seen}")
         
         # Bootstrap
         if not last_seen:
-            print("[taco] bootstrap → fetching recent posts", flush=True)
+            self._print_newline("Bootstrap → fetching recent posts")
+            self.feed.log("Bootstrap: fetching initial posts", subclass="lifecycle")
+            
             try:
                 page_iter = self.api.pull_statuses(
                     username=self.handle, replies=False, verbose=False,
@@ -108,25 +145,27 @@ class Monitor(Monitor):
                 
                 if first_page:
                     latest = first_page[0]
-                    
-                    # Screen the latest post for tariffs
                     raw = latest.get("content") or latest.get("text") or ""
                     text = self._strip_html(raw)
                     
                     if text:
-                        print("[taco] bootstrap → screening latest post with Haiku", flush=True)
                         screen_result = self._screen_with_haiku(text)
                         
                         if screen_result["is_tariff_related"] and screen_result["confidence"] > 0.6:
                             url = latest.get("url") or f"https://truthsocial.com/@{self.handle}/{latest.get('id')}"
                             created_at = latest.get("created_at") or ""
                             
-                            print(f"[taco] bootstrap → ✓ TARIFF POST (conf={screen_result['confidence']:.2f})", flush=True)
+                            self._print_newline(f"✓ Bootstrap: TARIFF POST (conf={screen_result['confidence']:.2f})")
+                            self.feed.log(
+                                f"Bootstrap: tariff post detected (conf={screen_result['confidence']:.2f})",
+                                subclass="screening",
+                                data={"reasoning": screen_result['reasoning']}
+                            )
                             
                             evt = Event(
                                 source=self.name,
                                 title="TACO Analysis",
-                                message="Analyzing tariff-related post with TACO pattern awareness...",
+                                message="Analyzing tariff-related post...",
                                 url=url,
                                 created_at=created_at,
                                 priority=0,
@@ -139,18 +178,21 @@ class Monitor(Monitor):
                             )
                             self.publish(evt)
                         else:
-                            print(f"[taco] bootstrap → ✗ not tariff-related (conf={screen_result['confidence']:.2f})", flush=True)
+                            self._print_newline(f"✗ Bootstrap: not tariff-related (conf={screen_result['confidence']:.2f})")
                     
                     last_seen = latest["id"]
                     self.state.set(last_seen, self.state_key_last)
-                    print(f"[taco] bootstrap complete | set last_seen={last_seen}", flush=True)
+                    self._print_newline(f"Bootstrap complete | last_seen={last_seen}")
+                    self.feed.log(f"Bootstrap complete: last_seen={last_seen}", subclass="lifecycle")
             except Exception as e:
-                print(f"[taco] bootstrap error: {e}", flush=True)
+                self._print_newline(f"Bootstrap error: {e}")
+                self.feed.error("Bootstrap failed", exception=e, subclass="lifecycle")
         
         # Main loop
         while True:
             try:
-                print("[taco] poll tick", flush=True)
+                self._print_newline("Poll tick")
+                self.feed.log("Poll cycle starting", subclass="polling")
 
                 try:
                     page_iter = self.api.pull_statuses(
@@ -158,10 +200,10 @@ class Monitor(Monitor):
                         created_after=None, since_id=last_seen, pinned=False,
                     )
                 except Exception as e:
-                    print(f"[taco] truthbrush fetch failed: {e}", flush=True)
+                    self._print_newline(f"Truthbrush fetch failed: {e}")
+                    self.feed.error("Fetch failed", exception=e, subclass="polling")
                     time.sleep(60)
                     continue
-
                 
                 new_posts = []
                 for i, post in enumerate(page_iter):
@@ -175,9 +217,9 @@ class Monitor(Monitor):
                         break
                 
                 if new_posts:
-                    print(f"[taco] found {len(new_posts)} new posts", flush=True)
+                    self._print_newline(f"Found {len(new_posts)} new post(s)")
+                    self.feed.log(f"Found {len(new_posts)} new posts", subclass="polling")
                     
-                    # Get rate limit delay from config
                     post_delay = self.config.get("POST_PROCESS_DELAY", 2.0)
                     
                     for post in reversed(new_posts):
@@ -187,24 +229,31 @@ class Monitor(Monitor):
                         if not text:
                             continue
                         
-                        # Use Haiku to screen (cheap, intelligent)
-                        print(f"[taco] screening post with {self.screening_model}...", flush=True)
+                        # Log post to feed
+                        self.feed.log_post(post, action="received", subclass="posts")
+                        
+                        # Screen with Haiku
                         screen_result = self._screen_with_haiku(text)
                         
                         if screen_result["is_tariff_related"] and screen_result["confidence"] > 0.6:
                             url = post.get("url") or f"https://truthsocial.com/@{self.handle}/{post.get('id')}"
                             created_at = post.get("created_at") or ""
                             
-                            print(f"[taco] ✓ TARIFF POST DETECTED (conf={screen_result['confidence']:.2f}) → sending to TACO-aware Claude", flush=True)
-                            print(f"[taco]   reasoning: {screen_result['reasoning']}", flush=True)
+                            self._print_newline(f"✓ TARIFF POST (conf={screen_result['confidence']:.2f}) → TACO analysis")
+                            self.feed.log(
+                                f"Tariff post detected (conf={screen_result['confidence']:.2f})",
+                                subclass="screening",
+                                data={"reasoning": screen_result['reasoning']}
+                            )
+                            self.feed.stat("tariff_posts_detected", 1, subclass="signals")
                             
                             evt = Event(
                                 source=self.name,
                                 title="TACO Analysis",
-                                message="Analyzing tariff-related post with TACO pattern awareness...",
+                                message="Analyzing tariff-related post...",
                                 url=url,
                                 created_at=created_at,
-                                priority=0,  # Claude will escalate if needed
+                                priority=0,
                                 payload={
                                     "analyze": True,
                                     "text": text,
@@ -214,23 +263,32 @@ class Monitor(Monitor):
                             )
                             self.publish(evt)
                             
-                            # Add delay after publishing to avoid rate limits
                             if post_delay > 0:
-                                print(f"[taco] rate limit protection: waiting {post_delay}s", flush=True)
                                 time.sleep(post_delay)
                         else:
-                            print(f"[taco] ✗ not tariff-related (conf={screen_result['confidence']:.2f})", flush=True)
+                            self._print_newline(f"✗ Not tariff-related (conf={screen_result['confidence']:.2f})")
+                            self.feed.log(
+                                f"Post skipped (conf={screen_result['confidence']:.2f})",
+                                subclass="screening",
+                                data={"reasoning": screen_result['reasoning']}
+                            )
                         
-                        # Update last seen
                         pid = post.get("id")
                         if pid and (not last_seen or pid > last_seen):
                             last_seen = pid
                             self.state.set(last_seen, self.state_key_last)
+                else:
+                    self._print_newline(f"No new posts (last_seen={last_seen})")
                 
-                time.sleep(self.poll_seconds)
+                # Smart idle with updating display
+                for remaining in range(self.poll_seconds, 0, -5):
+                    self._print_updating(f"idle … {remaining}s left")
+                    time.sleep(min(5, remaining))
+                self._print_newline("")
                 
             except Exception as e:
-                print(f"[taco] error: {e}", flush=True)
+                self._print_newline(f"Error: {e}")
+                self.feed.error("Loop error", exception=e)
                 import traceback
                 traceback.print_exc()
                 time.sleep(30)

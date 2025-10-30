@@ -9,20 +9,11 @@ except Exception as e:
     tb = None
     print(f"[truthSocial] ERROR importing truthbrush: {e}", flush=True)
 
-VERSION = "truth_social/2.0.0-haiku"
+VERSION = "truth_social/2.1.0-feeds"
 print(f"[truthSocial] module file → {inspect.getfile(inspect.currentframe())}", flush=True)
 
 _CLOUDFLARE_STRINGS = ("Access denied | truthsocial.com used Cloudflare", "Error 1015")
 _HTML_TAGS = re.compile(r"<[^>]+>")
-
-def _sleep_with_logs(total_s: int, label: str = "sleep"):
-    remaining = max(1, int(total_s))
-    step = 5
-    while remaining > 0:
-        chunk = min(step, remaining)
-        print(f"[truthSocial] {label} … {remaining}s left", flush=True)
-        time.sleep(chunk)
-        remaining -= chunk
 
 def _safe_print_exc(prefix: str, e: Exception):
     try:
@@ -67,7 +58,7 @@ class Monitor(Monitor):  # type: ignore[misc]
         self.screening_model = os.getenv("TRUTH_SOCIAL_SCREENING_MODEL", "claude-haiku-4-5-20251001")
         self.state = ctx.get("state")
         self.state_key_last = "truth_social:last_seen_id"
-        self.config = config  # Store for rate limit delay
+        self.config = config
         
         try:
             self.publish_timeout_sec = int(os.getenv("PUBLISH_TIMEOUT_SEC", "25"))
@@ -81,19 +72,41 @@ class Monitor(Monitor):  # type: ignore[misc]
             self.heartbeat_sec = 0
         self.heartbeat_push = os.getenv("TRUTH_SOCIAL_HEARTBEAT_PUSH", "0").strip() not in ("0", "", "false", "False")
         
+        # For smart console logging (updating in place)
+        self._last_console_line_len = 0
+        
         print(f"[truthSocial] Haiku screening: {'ENABLED' if self.enable_screening else 'DISABLED'}", flush=True)
+        
+        # Log startup to feed
+        self.feed.log(f"Monitor initialized for @{self.handle}", subclass="lifecycle")
+        self.feed.log(f"Screening: {self.screening_model if self.enable_screening else 'DISABLED'}", subclass="config")
+
+    def _print_updating(self, message: str):
+        """Print a message that updates in place (for idle messages)"""
+        # Clear previous line
+        if self._last_console_line_len > 0:
+            print('\r' + ' ' * self._last_console_line_len + '\r', end='', flush=True)
+        
+        # Print new message
+        print(f"[truthSocial] {message}", end='', flush=True)
+        self._last_console_line_len = len(f"[truthSocial] {message}")
+
+    def _print_newline(self, message: str):
+        """Print a message on a new line (for important events)"""
+        # Clear any updating line first
+        if self._last_console_line_len > 0:
+            print('\r' + ' ' * self._last_console_line_len + '\r', end='', flush=True)
+            self._last_console_line_len = 0
+        
+        print(f"[truthSocial] {message}", flush=True)
 
     def _screen_with_haiku(self, text: str) -> dict:
-        """
-        Use Haiku to screen if post is market-relevant.
-        Cost: ~$0.0001 per post
-        Returns: {"is_market_relevant": bool, "confidence": float, "reasoning": str}
-        """
+        """Use Haiku to screen if post is market-relevant."""
         if not self.enable_screening or not self.anthropic:
-            # Fallback: analyze everything
             return {"is_market_relevant": True, "confidence": 1.0, "reasoning": "screening disabled"}
         
         try:
+            t0 = time.time()
             response = self.anthropic.messages.create(
                 model=self.screening_model,
                 max_tokens=200,
@@ -115,6 +128,8 @@ Post: {text[:500]}'''
                 }]
             )
             
+            duration = time.time() - t0
+            
             # Extract text
             response_text = ""
             for block in response.content:
@@ -128,13 +143,28 @@ Post: {text[:500]}'''
                 response_text = re.sub(r"\s*```$", "", response_text)
             
             result = json.loads(response_text)
+            
+            # Log to feed
+            tokens = response.usage.input_tokens + response.usage.output_tokens
+            cost = tokens * 0.25 / 1_000_000  # Haiku pricing
+            
+            self.feed.log_api_call(
+                provider="anthropic",
+                model=self.screening_model,
+                tokens=tokens,
+                cost=cost,
+                duration=duration,
+                subclass="screening"
+            )
+            
             return result
+            
         except Exception as e:
-            print(f"[truthSocial] Haiku screening error: {e}", flush=True)
+            self._print_newline(f"Haiku screening error: {e}")
+            self.feed.error("Haiku screening failed", exception=e, subclass="screening")
             # Fallback: analyze everything (safe default)
             return {"is_market_relevant": True, "confidence": 0.5, "reasoning": "screening failed"}
 
-    # ---- publish with timeout ----
     def _publish_with_timeout(self, evt: Event) -> bool:
         done = threading.Event()
         err: list[BaseException] = []
@@ -151,10 +181,12 @@ Post: {text[:500]}'''
         t.start()
         finished = done.wait(timeout=max(1, self.publish_timeout_sec))
         if not finished:
-            print(f"[truthSocial] WARNING: publish timed out after {self.publish_timeout_sec}s — continuing monitor loop", flush=True)
+            self._print_newline(f"WARNING: publish timed out after {self.publish_timeout_sec}s")
+            self.feed.error(f"Publish timeout after {self.publish_timeout_sec}s", subclass="publish")
             return False
         if err:
             _safe_print_exc("publish exception", err[0])
+            self.feed.error("Publish exception", exception=err[0], subclass="publish")
         return True
 
     def _fetch_new(self, since_id: Optional[str]) -> List[dict]:
@@ -192,14 +224,19 @@ Post: {text[:500]}'''
         preview = (text or "").replace("\n", " ")
         if len(preview) > 120:
             preview = preview[:117] + "…"
-        print(f"[post:truthSocial] {sid} | {preview or '(media-only)'}", flush=True)
+        
+        self._print_newline(f"Post {sid}: {preview or '(media-only)'}")
+        
+        # Log post to feed
+        self.feed.log_post(post, action="received", subclass="posts")
 
         # Media-only posts: skip analysis
         if not text:
-            print(f"[truthSocial] media-only post, skipping analysis", flush=True)
+            self._print_newline("Media-only post, skipping analysis")
+            self.feed.log("Skipped media-only post", subclass="posts")
             evt = Event(
                 source=self.name,
-                title="TruthTrader — update",
+                title="TruthTrader – update",
                 message="Media-only post (no text). No trade signal.",
                 url=url,
                 created_at=created_at,
@@ -210,16 +247,19 @@ Post: {text[:500]}'''
             return
 
         # Screen with Haiku
-        print(f"[truthSocial] screening with {self.screening_model}...", flush=True)
         screen_result = self._screen_with_haiku(text)
         
         if screen_result["is_market_relevant"] and screen_result["confidence"] > 0.6:
-            print(f"[truthSocial] ✓ MARKET-RELEVANT (conf={screen_result['confidence']:.2f}) → analyzing with Sonnet", flush=True)
-            print(f"[truthSocial]   reasoning: {screen_result['reasoning']}", flush=True)
+            self._print_newline(f"✓ MARKET-RELEVANT (conf={screen_result['confidence']:.2f}) → analyzing")
+            self.feed.log(
+                f"Post {sid}: RELEVANT (conf={screen_result['confidence']:.2f})",
+                subclass="screening",
+                data={"reasoning": screen_result['reasoning']}
+            )
             
             evt = Event(
                 source=self.name,
-                title="TruthTrader — update",
+                title="TruthTrader – update",
                 message="Analyzing market-relevant post...",
                 url=url,
                 created_at=created_at,
@@ -228,19 +268,22 @@ Post: {text[:500]}'''
                     "analyze": True,
                     "text": text,
                     "taco_mode": False,
-                    "pre_screened": True,  # Already screened by Haiku
+                    "pre_screened": True,
                     "screen_confidence": screen_result["confidence"],
                 }
             )
         else:
-            print(f"[truthSocial] ✗ not market-relevant (conf={screen_result['confidence']:.2f}), skipping analysis", flush=True)
-            print(f"[truthSocial]   reasoning: {screen_result['reasoning']}", flush=True)
+            self._print_newline(f"✗ Not market-relevant (conf={screen_result['confidence']:.2f}), skipping")
+            self.feed.log(
+                f"Post {sid}: SKIPPED (conf={screen_result['confidence']:.2f})",
+                subclass="screening",
+                data={"reasoning": screen_result['reasoning']}
+            )
             
-            # Still send notification, but skip expensive Sonnet analysis
             evt = Event(
                 source=self.name,
-                title="TruthTrader — update (not analyzed)",
-                message=f"Post not market-relevant (Haiku conf={screen_result['confidence']:.2f}):\n{text[:200]}...\n\nSkipped analysis to save tokens.",
+                title="TruthTrader – update (not analyzed)",
+                message=f"Post not market-relevant (conf={screen_result['confidence']:.2f}):\n{text[:200]}...",
                 url=url,
                 created_at=created_at,
                 priority=0,
@@ -250,71 +293,79 @@ Post: {text[:500]}'''
         self._publish_with_timeout(evt)
 
     def run(self) -> None:
-        print(f"[truthSocial] RUN START — {VERSION}", flush=True)
+        self._print_newline(f"RUN START – {VERSION}")
+        self.feed.log(f"Monitor starting – {VERSION}", subclass="lifecycle")
+        
         last_seen: Optional[str] = self.state.get(self.state_key_last, default=None)
-        print(f"[truthSocial] start; handle=@{self.handle} poll={self.poll_seconds}s last_seen={last_seen}", flush=True)
+        self._print_newline(f"Monitoring @{self.handle} | poll={self.poll_seconds}s | last_seen={last_seen}")
 
         next_heartbeat_ts = time.time() + max(0, self.heartbeat_sec) if self.heartbeat_sec > 0 else float("inf")
 
         # Bootstrap
         if not last_seen:
-            print("[truthSocial] bootstrap → fetching newest page", flush=True)
+            self._print_newline("Bootstrap → fetching newest page")
+            self.feed.log("Bootstrap: fetching initial posts", subclass="lifecycle")
+            
             try:
                 first_page = self._fetch_new(None)
-                print(f"[truthSocial] bootstrap → got {len(first_page) if first_page else 0} post(s)", flush=True)
+                self._print_newline(f"Bootstrap → got {len(first_page) if first_page else 0} post(s)")
+                
                 if first_page:
                     latest = first_page[0]
                     self._publish_post(latest)
-                    print("[truthSocial] bootstrap → publish returned; updating state", flush=True)
                     last_seen = latest["id"]
                     try:
                         self.state.set(last_seen, self.state_key_last)
-                        print(f"[truthSocial] bootstrap → state.set OK last_seen={last_seen}", flush=True)
+                        self._print_newline(f"Bootstrap → state saved (last_seen={last_seen})")
+                        self.feed.log(f"Bootstrap complete: last_seen={last_seen}", subclass="lifecycle")
                     except Exception as se:
                         _safe_print_exc("state.set error (bootstrap)", se)
+                        self.feed.error("State save failed (bootstrap)", exception=se, subclass="lifecycle")
             except Exception as e:
                 _safe_print_exc("bootstrap fetch error", e)
+                self.feed.error("Bootstrap failed", exception=e, subclass="lifecycle")
 
-        print("[truthSocial] entering main poll loop", flush=True)
+        self._print_newline("Entering main poll loop")
 
         while True:
             try:
-                print("[truthSocial] POLL BEGIN", flush=True)
+                self._print_newline("POLL BEGIN")
+                self.feed.log("Poll cycle starting", subclass="polling")
+                
                 new_posts = self._fetch_new(last_seen)
 
                 if new_posts:
-                    print(f"[truthSocial] poll tick — new={len(new_posts)} (publishing oldest→newest)", flush=True)
+                    self._print_newline(f"Found {len(new_posts)} new post(s)")
+                    self.feed.log(f"Found {len(new_posts)} new posts", subclass="polling")
                     
-                    # Get rate limit delay from config
                     post_delay = self.config.get("POST_PROCESS_DELAY", 2.0)
                     
                     for post in reversed(new_posts):
                         try:
                             self._publish_post(post)
                             
-                            # Add delay between posts
                             if post_delay > 0:
-                                print(f"[truthSocial] rate limit protection: waiting {post_delay}s", flush=True)
                                 time.sleep(post_delay)
                         except Exception as pe:
                             _safe_print_exc("publish_post error", pe)
+                            self.feed.error("Post processing failed", exception=pe, subclass="posts")
                         
                         pid = post.get("id")
                         if pid and (not last_seen or pid > last_seen):
                             last_seen = pid
                             try:
                                 self.state.set(last_seen, self.state_key_last)
-                                print(f"[truthSocial] state.set OK last_seen={last_seen}", flush=True)
                             except Exception as se:
                                 _safe_print_exc("state.set error", se)
+                                self.feed.error("State save failed", exception=se, subclass="lifecycle")
                 else:
-                    print(f"[truthSocial] poll tick — new=0 last_seen={last_seen}", flush=True)
+                    self._print_newline(f"No new posts (last_seen={last_seen})")
 
                 # Heartbeat
                 now = time.time()
                 if now >= next_heartbeat_ts:
                     if self.heartbeat_push:
-                        print("[truthSocial] heartbeat publish → begin", flush=True)
+                        self._print_newline("Heartbeat publish")
                         self._publish_with_timeout(Event(
                             source=self.name,
                             title="Truth Social heartbeat",
@@ -322,25 +373,37 @@ Post: {text[:500]}'''
                             priority=0,
                             payload={"analyze": False},
                         ))
-                        print("[truthSocial] heartbeat publish → done", flush=True)
-                    else:
-                        print(f"[truthSocial] heartbeat (console-only): alive; last_seen={last_seen}", flush=True)
+                    self.feed.log(f"Heartbeat: last_seen={last_seen}", subclass="lifecycle")
                     next_heartbeat_ts = now + max(5, self.heartbeat_sec) if self.heartbeat_sec > 0 else float("inf")
 
                 jitter = int(random.uniform(-max(5, self.poll_seconds // 8),
                                             max(5, self.poll_seconds // 8)))
                 sleep_s = max(30, self.poll_seconds + jitter)
-                _sleep_with_logs(sleep_s, label="idle")
+                
+                # Smart idle logging - update in place
+                for remaining in range(sleep_s, 0, -5):
+                    self._print_updating(f"idle … {remaining}s left")
+                    time.sleep(min(5, remaining))
+                
+                # Clear the idle line and start fresh
+                self._print_newline("")
 
             except RuntimeError as rte:
                 msg = str(rte)
                 if "rate-limit" in msg.lower() or "429" in msg:
                     cool = random.randint(240, 480)
-                    print(f"[truthSocial] rate limited; cooling {cool}s… ({msg})", flush=True)
-                    _sleep_with_logs(cool, label="cooldown")
+                    self._print_newline(f"Rate limited → cooling {cool}s… ({msg})")
+                    self.feed.log(f"Rate limited: cooling {cool}s", subclass="errors")
+                    
+                    for remaining in range(cool, 0, -5):
+                        self._print_updating(f"cooldown … {remaining}s left")
+                        time.sleep(min(5, remaining))
+                    self._print_newline("")
                     continue
                 _safe_print_exc("runtime error", rte)
-                _sleep_with_logs(10, label="recover")
+                self.feed.error("Runtime error", exception=rte)
+                time.sleep(10)
             except Exception as e:
                 _safe_print_exc("ERROR loop", e)
-                _sleep_with_logs(10, label="recover")
+                self.feed.error("Loop error", exception=e)
+                time.sleep(10)
