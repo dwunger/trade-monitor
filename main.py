@@ -21,14 +21,14 @@ def load_monitor(name: str):
     # Each module must expose `Monitor` class
     return mod.Monitor
 
-def run_monitor_loop(MonitorCls, publish, cfg: Dict[str, Any], state: State, name: str):
+def run_monitor_loop(MonitorCls, publish, cfg: Dict[str, Any], ctx: Dict[str, Any], name: str):
     """
     Keeps a monitor alive: if it raises, log and restart after a short backoff.
     """
     backoff = 5
     while True:
         try:
-            mon = MonitorCls(publish=publish, config=cfg, ctx={"state": state})
+            mon = MonitorCls(publish=publish, config=cfg, ctx=ctx)
             mon.run()  # blocking loop
         except Exception as e:
             print(f"[runner:{name}] crashed: {e}", flush=True)
@@ -43,20 +43,38 @@ def main():
     cfg = get_config()
     state = State(path=cfg["STATE_FILE"])
     publish = make_publisher(cfg=cfg, state=state)
+    
+    # Optional feed system for structured logging
+    feed_storage = None
+    feeds_enabled = os.getenv("ENABLE_MONITOR_FEEDS", "false").lower() in ("1", "true", "yes")
+    
+    if feeds_enabled:
+        try:
+            from core.monitor_feed import FeedStorage, MonitorFeed
+            feed_db = os.getenv("MONITOR_FEEDS_DB", ".monitor_feeds.db")
+            feed_storage = FeedStorage(feed_db)
+            print(f"[main] Monitor feeds ENABLED → {feed_db}", flush=True)
+        except Exception as e:
+            print(f"[main] Failed to initialize feeds: {e}", file=sys.stderr)
+            feeds_enabled = False
+    else:
+        print("[main] Monitor feeds DISABLED (set ENABLE_MONITOR_FEEDS=true to enable)", flush=True)
 
     enabled = [s.strip() for s in os.getenv("ENABLED_MONITORS", "truth_social,example").split(",") if s.strip()]
     # Friendly names for the startup notification
     pretty = {
         "truth_social": "Truth Social (@{})".format(cfg["TRUTH_HANDLE"]),
         "example": "Example Monitor",
+        "taco": "TACO (Trump Always Chickens Out)",
+        "bls_rss": "BLS Economic Releases (CPI/PPI/NFP)",
     }
     names_list = ", ".join(pretty.get(n, n) for n in enabled)
 
     # One-time startup ping
     try:
         notify_pushover(
-            title="TruthTrader — service started",
-            message=f"Monitors: {names_list}\nModel: {cfg['MODEL']}\nReasoning: {cfg['REASONING_MODEL']}",
+            title="TruthTrader – service started",
+            message=f"Monitors: {names_list}\nModel: {cfg['MODEL']}\nReasoning: {cfg['REASONING_MODEL']}\nFeeds: {'ON' if feeds_enabled else 'OFF'}",
             priority=0
         )
     except Exception as e:
@@ -69,9 +87,21 @@ def main():
         except Exception as e:
             print(f"[main] Failed to load monitor '{name}': {e}", file=sys.stderr)
             continue
+        
+        # Build context for this monitor
+        ctx = {"state": state}
+        
+        # Add feed interface if enabled
+        if feeds_enabled:
+            from core.monitor_feed import MonitorFeed
+            ctx["feed"] = MonitorFeed(name, storage=feed_storage, enabled=True)
+        else:
+            from core.monitor_feed import NoOpFeed
+            ctx["feed"] = NoOpFeed(name)
+        
         t = threading.Thread(
             target=run_monitor_loop,
-            args=(MonitorCls, publish, cfg, state, name),
+            args=(MonitorCls, publish, cfg, ctx, name),
             daemon=True,
             name=f"monitor:{name}"
         )
