@@ -10,15 +10,18 @@ from core.notify import notify_pushover
 
 load_dotenv()
 
+# Global print lock for thread-safe console output
+_print_lock = threading.Lock()
+
 def _thread_excepthook(args):
-    print(f"[thread:{getattr(args, 'thread', None)}] unhandled exception: {args.exc_type.__name__}: {args.exc_value}", flush=True)
-    traceback.print_tb(args.exc_traceback)
+    with _print_lock:
+        print(f"[thread:{getattr(args, 'thread', None)}] unhandled exception: {args.exc_type.__name__}: {args.exc_value}", flush=True)
+        traceback.print_tb(args.exc_traceback)
 
 threading.excepthook = _thread_excepthook
 
 def load_monitor(name: str):
     mod = importlib.import_module(f"monitors.{name}")
-    # Each module must expose `Monitor` class
     return mod.Monitor
 
 def run_monitor_loop(MonitorCls, publish, cfg: Dict[str, Any], ctx: Dict[str, Any], name: str):
@@ -29,13 +32,15 @@ def run_monitor_loop(MonitorCls, publish, cfg: Dict[str, Any], ctx: Dict[str, An
     while True:
         try:
             mon = MonitorCls(publish=publish, config=cfg, ctx=ctx)
-            mon.run()  # blocking loop
+            mon.run()
         except Exception as e:
-            print(f"[runner:{name}] crashed: {e}", flush=True)
-            traceback.print_exc()
+            with _print_lock:
+                print(f"[runner:{name}] crashed: {e}", flush=True)
+                traceback.print_exc()
             backoff = min(120, backoff * 2)
             for i in range(backoff, 0, -5):
-                print(f"[runner:{name}] restart in {i}s …", flush=True)
+                with _print_lock:
+                    print(f"[runner:{name}] restart in {i}s …", flush=True)
                 time.sleep(min(5, i))
             continue
 
@@ -61,7 +66,6 @@ def main():
         print("[main] Monitor feeds DISABLED (set ENABLE_MONITOR_FEEDS=true to enable)", flush=True)
 
     enabled = [s.strip() for s in os.getenv("ENABLED_MONITORS", "truth_social,example").split(",") if s.strip()]
-    # Friendly names for the startup notification
     pretty = {
         "truth_social": "Truth Social (@{})".format(cfg["TRUTH_HANDLE"]),
         "example": "Example Monitor",
@@ -75,7 +79,9 @@ def main():
         notify_pushover(
             title="TruthTrader – service started",
             message=f"Monitors: {names_list}\nModel: {cfg['MODEL']}\nReasoning: {cfg['REASONING_MODEL']}\nFeeds: {'ON' if feeds_enabled else 'OFF'}",
-            priority=0
+            priority=0,
+            token=cfg.get("PUSHOVER_TOKEN"),
+            user=cfg.get("PUSHOVER_USER")
         )
     except Exception as e:
         print(f"[startup] Pushover notify failed: {e}", file=sys.stderr)
@@ -89,7 +95,7 @@ def main():
             continue
         
         # Build context for this monitor
-        ctx = {"state": state}
+        ctx = {"state": state, "print_lock": _print_lock}
         
         # Add feed interface if enabled
         if feeds_enabled:
@@ -109,11 +115,26 @@ def main():
         threads.append(t)
         print(f"[main] started monitor: {name}", flush=True)
 
-    # Watchdog prints liveness
+    # Quieter watchdog - only print status changes or every 5 minutes
     def _watchdog():
+        last_status = {}
+        last_full_report = time.time()
+        
         while True:
-            for t in threads:
-                print(f"[watchdog] {t.name} alive={t.is_alive()}", flush=True)
+            current_status = {t.name: t.is_alive() for t in threads}
+            
+            # Print if status changed or 5 minutes elapsed
+            status_changed = current_status != last_status
+            time_for_report = (time.time() - last_full_report) > 300
+            
+            if status_changed or time_for_report:
+                with _print_lock:
+                    for t in threads:
+                        status = "✓ alive" if t.is_alive() else "✗ DEAD"
+                        print(f"[watchdog] {t.name} {status}", flush=True)
+                last_status = current_status.copy()
+                last_full_report = time.time()
+            
             time.sleep(15)
 
     wd = threading.Thread(target=_watchdog, daemon=True, name="watchdog")
@@ -124,7 +145,8 @@ def main():
         while True:
             time.sleep(60)
     except KeyboardInterrupt:
-        print("\n[main] shutdown requested", flush=True)
+        with _print_lock:
+            print("\n[main] shutdown requested", flush=True)
 
 if __name__ == "__main__":
     main()
