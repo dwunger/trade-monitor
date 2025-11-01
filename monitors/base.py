@@ -11,9 +11,18 @@ class Monitor:
         self.ctx = ctx  # ctx["state"] is a State object
         
         # Optional feed interface for structured logging
-        # Monitors can use: self.feed.log(), .log_post(), .log_api_call(), .stat()
-        # If feeds are disabled, these are no-ops
-        self.feed = ctx.get("feed")  # MonitorFeed or NoOpFeed
+        self.feed = ctx.get("feed")
+        
+        # Thread-safe printing
+        self._print_lock = ctx.get("print_lock")
+    
+    def _print(self, message: str, end: str = '\n', flush: bool = True):
+        """Thread-safe print"""
+        if self._print_lock:
+            with self._print_lock:
+                print(f"[{self.name}] {message}", end=end, flush=flush)
+        else:
+            print(f"[{self.name}] {message}", end=end, flush=flush)
 
     def run(self) -> None:
         raise NotImplementedError
