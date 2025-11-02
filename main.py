@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, sys, time, threading, importlib, traceback
+import os, sys, time, threading, importlib, traceback, subprocess
 from typing import Dict, Any, List
 from dotenv import load_dotenv
 
@@ -65,6 +65,23 @@ def main():
     else:
         print("[main] Monitor feeds DISABLED (set ENABLE_MONITOR_FEEDS=true to enable)", flush=True)
 
+    # Optional GUI dashboard
+    gui_enabled = os.getenv("ENABLE_DASHBOARD_GUI", "false").lower() in ("1", "true", "yes")
+    gui_process = None
+    
+    if gui_enabled:
+        try:
+            feed_db = os.getenv("MONITOR_FEEDS_DB", ".monitor_feeds.db")
+            gui_process = subprocess.Popen(
+                [sys.executable, "gui_feed_viewer.py", "--db", feed_db],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            print(f"[main] Dashboard GUI started (PID: {gui_process.pid})", flush=True)
+        except Exception as e:
+            print(f"[main] Failed to start GUI: {e}", file=sys.stderr)
+            gui_process = None
+
     enabled = [s.strip() for s in os.getenv("ENABLED_MONITORS", "truth_social,example").split(",") if s.strip()]
     pretty = {
         "truth_social": "Truth Social (@{})".format(cfg["TRUTH_HANDLE"]),
@@ -78,7 +95,7 @@ def main():
     try:
         notify_pushover(
             title="TruthTrader – service started",
-            message=f"Monitors: {names_list}\nModel: {cfg['MODEL']}\nReasoning: {cfg['REASONING_MODEL']}\nFeeds: {'ON' if feeds_enabled else 'OFF'}",
+            message=f"Monitors: {names_list}\nModel: {cfg['MODEL']}\nReasoning: {cfg['REASONING_MODEL']}\nFeeds: {'ON' if feeds_enabled else 'OFF'}\nGUI: {'ON' if gui_enabled else 'OFF'}",
             priority=0,
             token=cfg.get("PUSHOVER_TOKEN"),
             user=cfg.get("PUSHOVER_USER")
@@ -147,6 +164,15 @@ def main():
     except KeyboardInterrupt:
         with _print_lock:
             print("\n[main] shutdown requested", flush=True)
+    finally:
+        # Clean up GUI process if it was started
+        if gui_process and gui_process.poll() is None:
+            print("[main] Terminating GUI process...", flush=True)
+            gui_process.terminate()
+            try:
+                gui_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                gui_process.kill()
 
 if __name__ == "__main__":
     main()
