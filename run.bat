@@ -90,6 +90,8 @@ if errorlevel 1 (
   exit /b 1
 )
 
+pip install flask --break-system-packages
+
 echo.
 echo === Running main.py ===
 python main.py
