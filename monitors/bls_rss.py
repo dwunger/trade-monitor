@@ -159,8 +159,19 @@ def _compose_prompt(bundle: Dict[str, dict]) -> str:
             continue
         item = bundle[k]
         lines.append(f"{k}: {item.get('title', '')}")
-        for label, val in item.get("data", []):
-            lines.append(f"- {label}: {val}")
+        
+        # Handle both tuple format (CPI/PPI) and string format (NFP)
+        data = item.get("data", [])
+        if data:
+            if isinstance(data[0], tuple):
+                # CPI/PPI format: [(label, value), ...]
+                for label, val in data:
+                    lines.append(f"- {label}: {val}")
+            else:
+                # NFP format: ["date: value", ...]
+                for entry in data:
+                    lines.append(f"- {entry}")
+        
         if item.get("link"):
             lines.append(f"Source: {item['link']}")
         if item.get("full_text"):
