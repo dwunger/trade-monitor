@@ -84,7 +84,7 @@ def index():
 def monitor_detail(monitor_name: str):
     """Detailed view for a specific monitor"""
     stats = storage.get_statistics(monitor_name)
-    logs = storage.get_logs(monitor=monitor_name, limit=200)
+    all_logs = storage.get_logs(monitor=monitor_name, limit=500)
     
     # Calculate totals
     totals = {
@@ -100,9 +100,16 @@ def monitor_detail(monitor_name: str):
             if key in totals:
                 totals[key] += data['value']
     
-    # Format logs for display
+    # Filter logs to show only screening and analysis (no lifecycle/config/bootstrap)
+    relevant_subclasses = {'screening', 'analysis', 'analysis_escalation', 'macro_analysis'}
+    
+    # Format logs for display (filtered)
     formatted_logs = []
-    for log in logs:
+    for log in all_logs:
+        # Only show logs from relevant subclasses
+        if log['subclass'] not in relevant_subclasses:
+            continue
+            
         formatted_log = {
             "id": log['id'],
             "timestamp": format_timestamp(log['timestamp']),
@@ -112,6 +119,9 @@ def monitor_detail(monitor_name: str):
             "has_details": bool(log.get('data') and log['data'].get('type') in ['api_call', 'post']),
         }
         formatted_logs.append(formatted_log)
+    
+    # Limit to most recent 200 after filtering
+    formatted_logs = formatted_logs[:200]
     
     return render_template(
         'monitor.html',
@@ -144,6 +154,30 @@ def log_detail(log_id: int):
     }
     
     return jsonify(log)
+
+
+@app.route('/log/<int:log_id>/full')
+def log_full_view(log_id: int):
+    """Full page view for API call details"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.execute("SELECT * FROM logs WHERE id = ?", (log_id,))
+    row = cursor.fetchone()
+    conn.close()
+    
+    if not row:
+        return "Log not found", 404
+    
+    log = {
+        "id": row[0],
+        "timestamp": format_timestamp(row[1]),
+        "monitor": row[2],
+        "subclass": row[3],
+        "level": row[4],
+        "message": row[5],
+        "data": json.loads(row[6]) if row[6] else {}
+    }
+    
+    return render_template('log_detail.html', log=log)
 
 
 @app.route('/api/stats')
@@ -648,7 +682,7 @@ def create_templates():
 
 <!-- Activity Log -->
 <div class="card">
-    <h2>Activity Log</h2>
+    <h2>Activity Log (Screening & Analysis Only)</h2>
     {% if logs %}
     <table class="log-table">
         <thead>
@@ -662,7 +696,7 @@ def create_templates():
         <tbody>
             {% for log in logs %}
             <tr class="{% if log.has_details %}clickable{% endif %}" 
-                {% if log.has_details %}onclick="showLogDetail({{ log.id }})"{% endif %}>
+                {% if log.has_details %}onclick="window.location.href='/log/{{ log.id }}/full'"{% endif %}>
                 <td>{{ log.timestamp }}</td>
                 <td>{{ log.subclass }}</td>
                 <td><span class="level-badge level-{{ log.level }}">{{ log.level }}</span></td>
@@ -677,107 +711,13 @@ def create_templates():
         </tbody>
     </table>
     {% else %}
-    <p style="color: #666; text-align: center; padding: 2rem;">No log entries yet.</p>
+    <p style="color: #666; text-align: center; padding: 2rem;">No screening or analysis log entries yet.</p>
     {% endif %}
-</div>
-
-<!-- Modal for log details -->
-<div id="logModal" class="modal">
-    <div class="modal-content">
-        <div class="modal-header">
-            <h3>Log Details</h3>
-            <span class="close" onclick="closeModal()">&times;</span>
-        </div>
-        <div id="modalBody">
-            <!-- Content will be loaded here -->
-        </div>
-    </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-function showLogDetail(logId) {
-    fetch('/api/log/' + logId)
-        .then(response => response.json())
-        .then(data => {
-            const modalBody = document.getElementById('modalBody');
-            
-            let html = '';
-            
-            // Basic info
-            html += '<div class="detail-section">';
-            html += '<h4>Timestamp</h4>';
-            html += '<div class="value">' + data.timestamp + '</div>';
-            html += '</div>';
-            
-            html += '<div class="detail-section">';
-            html += '<h4>Monitor / Category</h4>';
-            html += '<div class="value">' + data.monitor + ' / ' + (data.subclass || '(general)') + '</div>';
-            html += '</div>';
-            
-            html += '<div class="detail-section">';
-            html += '<h4>Message</h4>';
-            html += '<div class="value">' + data.message + '</div>';
-            html += '</div>';
-            
-            // Detailed data
-            if (data.data && Object.keys(data.data).length > 0) {
-                html += '<div class="detail-section">';
-                html += '<h4>Details</h4>';
-                
-                if (data.data.type === 'api_call') {
-                    html += '<table style="width: 100%; border-collapse: collapse;">';
-                    html += '<tr><td style="padding: 0.5rem; color: #666;">Provider</td><td style="padding: 0.5rem; font-weight: 600;">' + (data.data.provider || 'unknown') + '</td></tr>';
-                    if (data.data.model) {
-                        html += '<tr><td style="padding: 0.5rem; color: #666;">Model</td><td style="padding: 0.5rem; font-weight: 600;">' + data.data.model + '</td></tr>';
-                    }
-                    html += '<tr><td style="padding: 0.5rem; color: #666;">Tokens</td><td style="padding: 0.5rem; font-weight: 600;">' + (data.data.tokens || 0).toLocaleString() + '</td></tr>';
-                    html += '<tr><td style="padding: 0.5rem; color: #666;">Cost</td><td style="padding: 0.5rem; font-weight: 600;">$' + (data.data.cost || 0).toFixed(4) + '</td></tr>';
-                    html += '<tr><td style="padding: 0.5rem; color: #666;">Duration</td><td style="padding: 0.5rem; font-weight: 600;">' + (data.data.duration_sec || 0).toFixed(2) + 's</td></tr>';
-                    html += '</table>';
-                } else if (data.data.type === 'post') {
-                    html += '<table style="width: 100%; border-collapse: collapse;">';
-                    html += '<tr><td style="padding: 0.5rem; color: #666;">Action</td><td style="padding: 0.5rem; font-weight: 600;">' + (data.data.action || 'unknown') + '</td></tr>';
-                    html += '<tr><td style="padding: 0.5rem; color: #666;">Post ID</td><td style="padding: 0.5rem; font-weight: 600;">' + (data.data.post_id || 'unknown') + '</td></tr>';
-                    if (data.data.url) {
-                        html += '<tr><td style="padding: 0.5rem; color: #666;">URL</td><td style="padding: 0.5rem; font-weight: 600;"><a href="' + data.data.url + '" target="_blank" style="color: #667eea;">View Post</a></td></tr>';
-                    }
-                    if (data.data.preview) {
-                        html += '<tr><td colspan="2" style="padding: 0.5rem;"><div style="margin-top: 0.5rem; padding: 1rem; background: #f9fafb; border-radius: 4px; font-style: italic;">' + data.data.preview + '</div></td></tr>';
-                    }
-                    html += '</table>';
-                } else {
-                    // Generic JSON display
-                    html += '<div class="json-container">';
-                    html += '<pre>' + JSON.stringify(data.data, null, 2) + '</pre>';
-                    html += '</div>';
-                }
-                
-                html += '</div>';
-            }
-            
-            modalBody.innerHTML = html;
-            document.getElementById('logModal').style.display = 'block';
-        })
-        .catch(error => {
-            console.error('Error loading log details:', error);
-            alert('Failed to load log details');
-        });
-}
-
-function closeModal() {
-    document.getElementById('logModal').style.display = 'none';
-}
-
-// Close modal when clicking outside of it
-window.onclick = function(event) {
-    const modal = document.getElementById('logModal');
-    if (event.target == modal) {
-        closeModal();
-    }
-}
-
 // Auto-refresh statistics every 30 seconds
 setInterval(function() {
     fetch('/api/stats?monitor={{ monitor_name }}')
@@ -800,11 +740,404 @@ setInterval(function() {
                 }
             }
             
-            // Update the display (you could make this more sophisticated)
             console.log('Stats updated:', totals);
         })
         .catch(error => console.error('Error refreshing stats:', error));
 }, 30000);
+</script>
+{% endblock %}
+""", encoding='utf-8')
+    
+    # Log detail template (full page view)
+    (templates_dir / "log_detail.html").write_text("""{% extends "base.html" %}
+
+{% block title %}Log {{ log.id }} - TruthTrader Dashboard{% endblock %}
+
+{% block extra_css %}
+<style>
+    .section {
+        background: white;
+        border-radius: 8px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .section h3 {
+        color: #667eea;
+        font-size: 1.2rem;
+        margin-bottom: 1rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 2px solid #e5e7eb;
+    }
+    
+    .meta-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+        margin-bottom: 1rem;
+    }
+    
+    .meta-item {
+        padding: 0.75rem;
+        background: #f9fafb;
+        border-radius: 4px;
+    }
+    
+    .meta-label {
+        font-size: 0.85rem;
+        color: #666;
+        margin-bottom: 0.25rem;
+    }
+    
+    .meta-value {
+        font-weight: 600;
+        color: #333;
+    }
+    
+    .code-block {
+        background: #1e1e1e;
+        color: #d4d4d4;
+        padding: 1.5rem;
+        border-radius: 4px;
+        overflow-x: auto;
+        font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+        font-size: 0.9rem;
+        line-height: 1.6;
+        max-height: 600px;
+        overflow-y: auto;
+    }
+    
+    .code-block pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+    }
+    
+    .message-box {
+        background: #f9fafb;
+        border-left: 4px solid #667eea;
+        padding: 1rem;
+        margin: 1rem 0;
+        border-radius: 4px;
+    }
+    
+    .message-role {
+        font-weight: 600;
+        color: #667eea;
+        margin-bottom: 0.5rem;
+    }
+    
+    .message-content {
+        color: #333;
+        line-height: 1.6;
+        white-space: pre-wrap;
+    }
+    
+    .tab-container {
+        margin-top: 1rem;
+    }
+    
+    .tab-buttons {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+        border-bottom: 2px solid #e5e7eb;
+    }
+    
+    .tab-button {
+        padding: 0.75rem 1.5rem;
+        background: none;
+        border: none;
+        color: #666;
+        cursor: pointer;
+        font-weight: 600;
+        border-bottom: 3px solid transparent;
+        margin-bottom: -2px;
+        transition: all 0.2s;
+    }
+    
+    .tab-button:hover {
+        color: #667eea;
+    }
+    
+    .tab-button.active {
+        color: #667eea;
+        border-bottom-color: #667eea;
+    }
+    
+    .tab-content {
+        display: none;
+    }
+    
+    .tab-content.active {
+        display: block;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div style="margin-bottom: 2rem;">
+    <a href="/monitor/{{ log.monitor }}" style="color: #667eea; text-decoration: none; font-weight: 600;">← Back to {{ log.monitor.upper() }}</a>
+</div>
+
+<h2 style="margin-bottom: 1.5rem; color: #333;">API Call Details</h2>
+
+<!-- Metadata Section -->
+<div class="section">
+    <h3>Metadata</h3>
+    <div class="meta-grid">
+        <div class="meta-item">
+            <div class="meta-label">Monitor</div>
+            <div class="meta-value">{{ log.monitor }}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Category</div>
+            <div class="meta-value">{{ log.subclass or '(general)' }}</div>
+        </div>
+        <div class="meta-item">
+            <div class="meta-label">Timestamp</div>
+            <div class="meta-value">{{ log.timestamp }}</div>
+        </div>
+        {% if log.data.provider %}
+        <div class="meta-item">
+            <div class="meta-label">Provider</div>
+            <div class="meta-value">{{ log.data.provider }}</div>
+        </div>
+        {% endif %}
+        {% if log.data.model %}
+        <div class="meta-item">
+            <div class="meta-label">Model</div>
+            <div class="meta-value">{{ log.data.model }}</div>
+        </div>
+        {% endif %}
+        {% if log.data.tokens %}
+        <div class="meta-item">
+            <div class="meta-label">Tokens</div>
+            <div class="meta-value">{{ log.data.tokens | format_number }}</div>
+        </div>
+        {% endif %}
+        {% if log.data.cost %}
+        <div class="meta-item">
+            <div class="meta-label">Cost</div>
+            <div class="meta-value">{{ log.data.cost | format_cost }}</div>
+        </div>
+        {% endif %}
+        {% if log.data.duration_sec %}
+        <div class="meta-item">
+            <div class="meta-label">Duration</div>
+            <div class="meta-value">{{ "%.2f" | format(log.data.duration_sec) }}s</div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{% if log.data.request or log.data.response %}
+<!-- Tab Navigation -->
+<div class="section">
+    <div class="tab-container">
+        <div class="tab-buttons">
+            {% if log.data.request %}
+            <button class="tab-button active" onclick="switchTab('request')">Request</button>
+            {% endif %}
+            {% if log.data.response %}
+            <button class="tab-button {% if not log.data.request %}active{% endif %}" onclick="switchTab('response')">Response</button>
+            {% endif %}
+            <button class="tab-button" onclick="switchTab('raw')">Raw JSON</button>
+        </div>
+        
+        {% if log.data.request %}
+        <!-- Request Tab -->
+        <div id="tab-request" class="tab-content active">
+            <h3>API Request</h3>
+            
+            {% if log.data.request.system %}
+            <div style="margin-bottom: 1.5rem;">
+                <h4 style="color: #666; margin-bottom: 0.5rem;">System Prompt</h4>
+                <div class="code-block">
+                    <pre>{{ log.data.request.system }}</pre>
+                </div>
+            </div>
+            {% endif %}
+            
+            {% if log.data.request.messages %}
+            <div style="margin-bottom: 1.5rem;">
+                <h4 style="color: #666; margin-bottom: 0.5rem;">Messages</h4>
+                {% for message in log.data.request.messages %}
+                <div class="message-box">
+                    <div class="message-role">{{ message.role | upper }}</div>
+                    <div class="message-content">{{ message.content }}</div>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+            
+            {% if log.data.request.max_tokens %}
+            <div style="margin-bottom: 1rem;">
+                <strong>Max Tokens:</strong> {{ log.data.request.max_tokens }}
+            </div>
+            {% endif %}
+            
+            {% if log.data.request.temperature is defined %}
+            <div style="margin-bottom: 1rem;">
+                <strong>Temperature:</strong> {{ log.data.request.temperature }}
+            </div>
+            {% endif %}
+            
+            {% if log.data.request.tools %}
+            <div style="margin-bottom: 1.5rem;">
+                <h4 style="color: #666; margin-bottom: 0.5rem;">Tools Enabled</h4>
+                <div class="code-block">
+                    <pre>{{ log.data.request.tools | tojson(indent=2) }}</pre>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+        
+        {% if log.data.response %}
+        <!-- Response Tab -->
+        <div id="tab-response" class="tab-content {% if not log.data.request %}active{% endif %}">
+            <h3>API Response</h3>
+            
+            {% if log.data.response.content %}
+            <div style="margin-bottom: 1.5rem;">
+                <h4 style="color: #666; margin-bottom: 0.5rem;">Response Content</h4>
+                {% if log.data.response.content is string %}
+                <div class="code-block">
+                    <pre>{{ log.data.response.content }}</pre>
+                </div>
+                {% else %}
+                <!-- Handle array of content blocks -->
+                {% for block in log.data.response.content %}
+                    {% if block.type == 'text' %}
+                    <div class="message-box">
+                        <div class="message-role">TEXT</div>
+                        <div class="message-content">{{ block.text }}</div>
+                    </div>
+                    {% elif block.type == 'thinking' %}
+                    <div class="message-box" style="border-left-color: #f59e0b;">
+                        <div class="message-role" style="color: #f59e0b;">THINKING</div>
+                        <div class="message-content" style="color: #666; font-style: italic;">{{ block.thinking }}</div>
+                    </div>
+                    {% else %}
+                    <div class="code-block">
+                        <pre>{{ block | tojson(indent=2) }}</pre>
+                    </div>
+                    {% endif %}
+                {% endfor %}
+                {% endif %}
+            </div>
+            {% endif %}
+            
+            {% if log.data.response.usage %}
+            <div style="margin-bottom: 1.5rem;">
+                <h4 style="color: #666; margin-bottom: 0.5rem;">Token Usage</h4>
+                <div class="meta-grid">
+                    {% if log.data.response.usage.input_tokens %}
+                    <div class="meta-item">
+                        <div class="meta-label">Input Tokens</div>
+                        <div class="meta-value">{{ log.data.response.usage.input_tokens | format_number }}</div>
+                    </div>
+                    {% endif %}
+                    {% if log.data.response.usage.output_tokens %}
+                    <div class="meta-item">
+                        <div class="meta-label">Output Tokens</div>
+                        <div class="meta-value">{{ log.data.response.usage.output_tokens | format_number }}</div>
+                    </div>
+                    {% endif %}
+                    {% if log.data.response.usage.cache_creation_input_tokens %}
+                    <div class="meta-item">
+                        <div class="meta-label">Cache Creation</div>
+                        <div class="meta-value">{{ log.data.response.usage.cache_creation_input_tokens | format_number }}</div>
+                    </div>
+                    {% endif %}
+                    {% if log.data.response.usage.cache_read_input_tokens %}
+                    <div class="meta-item">
+                        <div class="meta-label">Cache Read</div>
+                        <div class="meta-value">{{ log.data.response.usage.cache_read_input_tokens | format_number }}</div>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+            
+            {% if log.data.response.stop_reason %}
+            <div style="margin-bottom: 1rem;">
+                <strong>Stop Reason:</strong> {{ log.data.response.stop_reason }}
+            </div>
+            {% endif %}
+        </div>
+        {% endif %}
+        
+        <!-- Raw JSON Tab -->
+        <div id="tab-raw" class="tab-content">
+            <h3>Raw JSON Data</h3>
+            <div class="code-block">
+                <pre>{{ log.data | tojson(indent=2) }}</pre>
+            </div>
+        </div>
+    </div>
+</div>
+{% else %}
+<!-- Fallback for logs without request/response data -->
+<div class="section">
+    <h3>Log Data</h3>
+    {% if log.data.type == 'post' %}
+        <div class="meta-grid">
+            <div class="meta-item">
+                <div class="meta-label">Action</div>
+                <div class="meta-value">{{ log.data.action }}</div>
+            </div>
+            <div class="meta-item">
+                <div class="meta-label">Post ID</div>
+                <div class="meta-value">{{ log.data.post_id }}</div>
+            </div>
+            {% if log.data.url %}
+            <div class="meta-item">
+                <div class="meta-label">URL</div>
+                <div class="meta-value"><a href="{{ log.data.url }}" target="_blank" style="color: #667eea;">View Post</a></div>
+            </div>
+            {% endif %}
+        </div>
+        {% if log.data.preview %}
+        <div style="margin-top: 1rem;">
+            <h4 style="color: #666; margin-bottom: 0.5rem;">Preview</h4>
+            <div class="message-box">
+                <div class="message-content">{{ log.data.preview }}</div>
+            </div>
+        </div>
+        {% endif %}
+    {% else %}
+        <div class="code-block">
+            <pre>{{ log.data | tojson(indent=2) }}</pre>
+        </div>
+    {% endif %}
+</div>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+function switchTab(tabName) {
+    // Hide all tab contents
+    const contents = document.querySelectorAll('.tab-content');
+    contents.forEach(content => content.classList.remove('active'));
+    
+    // Deactivate all buttons
+    const buttons = document.querySelectorAll('.tab-button');
+    buttons.forEach(button => button.classList.remove('active'));
+    
+    // Show selected tab
+    const selectedTab = document.getElementById('tab-' + tabName);
+    if (selectedTab) {
+        selectedTab.classList.add('active');
+    }
+    
+    // Activate clicked button
+    event.target.classList.add('active');
+}
 </script>
 {% endblock %}
 """, encoding='utf-8')

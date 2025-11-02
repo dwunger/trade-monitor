@@ -341,120 +341,250 @@ class Analyzer:
         state.set(recent, "taco_recent_announcements")
 
     def analyze_post(self, content: str, url: str, created_at: str, 
-                     taco_mode: bool = False, state=None) -> Dict[str, Any]:
-        content = (content or "").strip()
-        if not content:
-            return {"analysis": "Media-only post (no text). No trade signal.",
-                    "sentiment": "neutral", "confidence": 0.4,
-                    "tickers": [], "needs_search": False, "sources": [], "priority": 0}
+                 taco_mode: bool = False, state=None, feed=None) -> Dict[str, Any]:
+            content = (content or "").strip()
+            if not content:
+                return {"analysis": "Media-only post (no text). No trade signal.",
+                        "sentiment": "neutral", "confidence": 0.4,
+                        "tickers": [], "needs_search": False, "sources": [], "priority": 0}
 
-        # Choose system message and max_tokens based on mode
-        sys_msg = _taco_system_msg() if taco_mode else _system_msg()
-        max_tokens_first = 16384 if taco_mode else 8192  # TACO needs more for options analysis
-        max_tokens_reasoning = 16384  # Always give reasoning model full capacity
-        
-        # Build context for TACO mode
-        context_note = ""
-        if taco_mode and state:
-            context_note = f"\n\n{self._get_recent_taco_context(state)}"
+            # Choose system message and max_tokens based on mode
+            sys_msg = _taco_system_msg() if taco_mode else _system_msg()
+            max_tokens_first = 16384 if taco_mode else 8192  # TACO needs more for options analysis
+            max_tokens_reasoning = 16384  # Always give reasoning model full capacity
+            
+            # Build context for TACO mode
+            context_note = ""
+            if taco_mode and state:
+                context_note = f"\n\n{self._get_recent_taco_context(state)}"
 
-        tools = self._web_search_tool_config()
-        print(f"[anthropic] request 1 → model={self.cfg['MODEL']} | taco_mode={taco_mode} | tools={'web_search' if tools else 'none'} | url={url}")
-        
-        prompt = f"Analyze this Truth Social post"
-        if taco_mode:
-            prompt = "TACO PATTERN ANALYSIS - Analyze this tariff-related post"
-        
-        try:
-            r1 = self._messages_create_safe(
-                model=self.cfg["MODEL"],
-                max_tokens=max_tokens_first,
-                system=sys_msg,
-                tools=tools if tools else None,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": f"{prompt}.\n"
-                                   f"POST_URL: {url}\nCREATED_AT: {created_at}\nPOST_TEXT:\n{content}\n\n"
-                                   f"{'Use web search to check current S&P 500, VIX, and market conditions. ' if taco_mode else ''}"
-                                   f"Return analysis with trade recommendations."
-                                   f"{context_note}"
-                    }
-                ],
+            tools = self._web_search_tool_config()
+            print(f"[anthropic] request 1 → model={self.cfg['MODEL']} | taco_mode={taco_mode} | tools={'web_search' if tools else 'none'} | url={url}")
+            
+            prompt = f"Analyze this Truth Social post"
+            if taco_mode:
+                prompt = "TACO PATTERN ANALYSIS - Analyze this tariff-related post"
+            
+            # Build the user message content
+            user_message = (
+                f"{prompt}.\n"
+                f"POST_URL: {url}\nCREATED_AT: {created_at}\nPOST_TEXT:\n{content}\n\n"
+                f"{'Use web search to check current S&P 500, VIX, and market conditions. ' if taco_mode else ''}"
+                f"Return analysis with trade recommendations."
+                f"{context_note}"
             )
-        except Exception as e:
-            print(f"[anthropic] request 1 failed: {e}", flush=True)
-            # Return safe default on rate limit or other errors
-            return {"analysis": f"Analysis failed: {str(e)[:200]}",
-                    "sentiment": "neutral", "confidence": 0.0,
-                    "tickers": [], "needs_search": False, "sources": [], "priority": 0}
-        
-        used1 = _used_web_search_from_response(r1)
-        print(f"[anthropic] request 1 done | web_used={bool(used1)}")
-        if used1:
-            self._note_search()
-
-        assistant_text = _extract_text_from_response(r1)
-        decision = self._shape_to_json(
-            self.cfg["MODEL"], 
-            assistant_text,
-            sorted(self.cfg["TICKER_WHITELIST"]) if self.cfg["TICKER_WHITELIST"] else None
-        )
-
-        # In TACO mode, update the rolling context
-        if taco_mode and state:
-            summary = f"{assistant_text[:150]}..." if len(assistant_text) > 150 else assistant_text
-            self._update_taco_context(state, summary)
-
-        # Escalate to reasoning model if confidence is low (but not for TACO IMMEDIATE_BUY signals)
-        should_escalate = decision.get("confidence", 0.0) < float(self.cfg["REASONING_TRIGGER_CONF"])
-        is_immediate_buy = taco_mode and decision.get("priority", 0) >= 2
-        
-        if should_escalate and not is_immediate_buy:
-            tools2 = self._web_search_tool_config()
-            print(f"[anthropic] request 2 (escalation) → model={self.cfg['REASONING_MODEL']} | tools={'web_search' if tools2 else 'none'} | url={url}")
             
             try:
-                r2 = self._messages_create_safe(
-                    model=self.cfg["REASONING_MODEL"],
-                    max_tokens=max_tokens_reasoning,
+                t0 = time.time()
+                r1 = self._messages_create_safe(
+                    model=self.cfg["MODEL"],
+                    max_tokens=max_tokens_first,
                     system=sys_msg,
-                    tools=tools2 if tools2 else None,
+                    tools=tools if tools else None,
                     messages=[
                         {
                             "role": "user",
-                            "content": f"Re-analyze with deeper reasoning and refine the trade decision.\n"
-                                       f"POST_URL: {url}\nCREATED_AT: {created_at}\nPOST_TEXT:\n{content}\n"
-                                       f"{'Check latest market data and TACO pattern history. ' if taco_mode else ''}"
-                                       f"Return analysis with trade recommendations."
-                                       f"{context_note}"
+                            "content": user_message
                         }
                     ],
                 )
+                duration1 = time.time() - t0
             except Exception as e:
-                print(f"[anthropic] request 2 failed (escalation): {e}", flush=True)
-                # Return decision from first pass if escalation fails
-                return decision
+                print(f"[anthropic] request 1 failed: {e}", flush=True)
+                # Return safe default on rate limit or other errors
+                return {"analysis": f"Analysis failed: {str(e)[:200]}",
+                        "sentiment": "neutral", "confidence": 0.0,
+                        "tickers": [], "needs_search": False, "sources": [], "priority": 0}
             
-            used2 = _used_web_search_from_response(r2)
-            print(f"[anthropic] request 2 done | web_used={bool(used2)}")
-            if used2:
+            used1 = _used_web_search_from_response(r1)
+            print(f"[anthropic] request 1 done | web_used={bool(used1)}")
+            if used1:
                 self._note_search()
 
-            assistant_text2 = _extract_text_from_response(r2)
-            decision2 = self._shape_to_json(
-                self.cfg["REASONING_MODEL"], 
-                assistant_text2,
+            assistant_text = _extract_text_from_response(r1)
+            
+            # Log first API call with full data
+            if feed:
+                request_data = {
+                    "model": self.cfg["MODEL"],
+                    "max_tokens": max_tokens_first,
+                    "system": sys_msg,
+                    "messages": [{"role": "user", "content": user_message}],
+                    "tools": tools if tools else None,
+                }
+                
+                # Build response content array
+                response_content = []
+                for block in r1.content:
+                    if hasattr(block, 'type'):
+                        if block.type == 'text':
+                            response_content.append({"type": "text", "text": block.text})
+                        elif block.type == 'thinking':
+                            response_content.append({"type": "thinking", "thinking": block.thinking})
+                        elif block.type == 'tool_use':
+                            response_content.append({
+                                "type": "tool_use",
+                                "id": block.id,
+                                "name": block.name,
+                                "input": block.input
+                            })
+                
+                response_data = {
+                    "content": response_content,
+                    "usage": {
+                        "input_tokens": r1.usage.input_tokens,
+                        "output_tokens": r1.usage.output_tokens,
+                    },
+                    "stop_reason": r1.stop_reason,
+                    "model": r1.model,
+                }
+                
+                # Add cache info if available
+                if hasattr(r1.usage, 'cache_creation_input_tokens') and r1.usage.cache_creation_input_tokens:
+                    response_data["usage"]["cache_creation_input_tokens"] = r1.usage.cache_creation_input_tokens
+                if hasattr(r1.usage, 'cache_read_input_tokens') and r1.usage.cache_read_input_tokens:
+                    response_data["usage"]["cache_read_input_tokens"] = r1.usage.cache_read_input_tokens
+                
+                tokens = r1.usage.input_tokens + r1.usage.output_tokens
+                # Calculate cost based on model (simplified - adjust for your actual pricing)
+                cost = tokens * 3.0 / 1_000_000  # Sonnet 4.5 pricing
+                
+                feed.log_api_call(
+                    provider="anthropic",
+                    model=self.cfg["MODEL"],
+                    tokens=tokens,
+                    cost=cost,
+                    duration=duration1,
+                    subclass="analysis",
+                    request_data=request_data,
+                    response_data=response_data
+                )
+            
+            decision = self._shape_to_json(
+                self.cfg["MODEL"], 
+                assistant_text,
                 sorted(self.cfg["TICKER_WHITELIST"]) if self.cfg["TICKER_WHITELIST"] else None
             )
-            
-            if decision2.get("confidence", 0.0) >= decision.get("confidence", 0.0):
-                decision = decision2
-                decision["escalated"] = True
 
-        return decision
+            # In TACO mode, update the rolling context
+            if taco_mode and state:
+                summary = f"{assistant_text[:150]}..." if len(assistant_text) > 150 else assistant_text
+                self._update_taco_context(state, summary)
+
+            # Escalate to reasoning model if confidence is low (but not for TACO IMMEDIATE_BUY signals)
+            should_escalate = decision.get("confidence", 0.0) < float(self.cfg["REASONING_TRIGGER_CONF"])
+            is_immediate_buy = taco_mode and decision.get("priority", 0) >= 2
+            
+            if should_escalate and not is_immediate_buy:
+                tools2 = self._web_search_tool_config()
+                print(f"[anthropic] request 2 (escalation) → model={self.cfg['REASONING_MODEL']} | tools={'web_search' if tools2 else 'none'} | url={url}")
+                
+                # Build the escalation message
+                user_message2 = (
+                    f"Re-analyze with deeper reasoning and refine the trade decision.\n"
+                    f"POST_URL: {url}\nCREATED_AT: {created_at}\nPOST_TEXT:\n{content}\n"
+                    f"{'Check latest market data and TACO pattern history. ' if taco_mode else ''}"
+                    f"Return analysis with trade recommendations."
+                    f"{context_note}"
+                )
+                
+                try:
+                    t0 = time.time()
+                    r2 = self._messages_create_safe(
+                        model=self.cfg["REASONING_MODEL"],
+                        max_tokens=max_tokens_reasoning,
+                        system=sys_msg,
+                        tools=tools2 if tools2 else None,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": user_message2
+                            }
+                        ],
+                    )
+                    duration2 = time.time() - t0
+                except Exception as e:
+                    print(f"[anthropic] request 2 failed (escalation): {e}", flush=True)
+                    # Return decision from first pass if escalation fails
+                    return decision
+                
+                used2 = _used_web_search_from_response(r2)
+                print(f"[anthropic] request 2 done | web_used={bool(used2)}")
+                if used2:
+                    self._note_search()
+
+                assistant_text2 = _extract_text_from_response(r2)
+                
+                # Log second API call with full data
+                if feed:
+                    request_data2 = {
+                        "model": self.cfg["REASONING_MODEL"],
+                        "max_tokens": max_tokens_reasoning,
+                        "system": sys_msg,
+                        "messages": [{"role": "user", "content": user_message2}],
+                        "tools": tools2 if tools2 else None,
+                    }
+                    
+                    # Build response content array
+                    response_content2 = []
+                    for block in r2.content:
+                        if hasattr(block, 'type'):
+                            if block.type == 'text':
+                                response_content2.append({"type": "text", "text": block.text})
+                            elif block.type == 'thinking':
+                                response_content2.append({"type": "thinking", "thinking": block.thinking})
+                            elif block.type == 'tool_use':
+                                response_content2.append({
+                                    "type": "tool_use",
+                                    "id": block.id,
+                                    "name": block.name,
+                                    "input": block.input
+                                })
+                    
+                    response_data2 = {
+                        "content": response_content2,
+                        "usage": {
+                            "input_tokens": r2.usage.input_tokens,
+                            "output_tokens": r2.usage.output_tokens,
+                        },
+                        "stop_reason": r2.stop_reason,
+                        "model": r2.model,
+                    }
+                    
+                    # Add cache info if available
+                    if hasattr(r2.usage, 'cache_creation_input_tokens') and r2.usage.cache_creation_input_tokens:
+                        response_data2["usage"]["cache_creation_input_tokens"] = r2.usage.cache_creation_input_tokens
+                    if hasattr(r2.usage, 'cache_read_input_tokens') and r2.usage.cache_read_input_tokens:
+                        response_data2["usage"]["cache_read_input_tokens"] = r2.usage.cache_read_input_tokens
+                    
+                    tokens = r2.usage.input_tokens + r2.usage.output_tokens
+                    # Opus pricing (adjust as needed)
+                    cost = tokens * 15.0 / 1_000_000
+                    
+                    feed.log_api_call(
+                        provider="anthropic",
+                        model=self.cfg["REASONING_MODEL"],
+                        tokens=tokens,
+                        cost=cost,
+                        duration=duration2,
+                        subclass="analysis_escalation",
+                        request_data=request_data2,
+                        response_data=response_data2
+                    )
+                
+                decision2 = self._shape_to_json(
+                    self.cfg["REASONING_MODEL"], 
+                    assistant_text2,
+                    sorted(self.cfg["TICKER_WHITELIST"]) if self.cfg["TICKER_WHITELIST"] else None
+                )
+                
+                if decision2.get("confidence", 0.0) >= decision.get("confidence", 0.0):
+                    decision = decision2
+                    decision["escalated"] = True
+
+            return decision
     
-    def analyze_macro(self, content: str, state=None) -> Dict[str, Any]:
+    def analyze_macro(self, content: str, state=None, feed=None) -> Dict[str, Any]:
         """
         Analyze official macroeconomic reports (e.g., CPI, PPI, NFP).
         Used by the BLS RSS monitor.

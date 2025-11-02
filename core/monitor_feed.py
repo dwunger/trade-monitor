@@ -1,10 +1,11 @@
 """
-Monitor Feed System - Optional structured logging for monitors
+Enhanced Monitor Feed System - Stores full API request/response payloads
 
 Usage in monitors:
     self.feed.log("Starting poll cycle")
     self.feed.log_post(post_data, action="screened")
-    self.feed.log_api_call("anthropic", tokens=1234, cost=0.015)
+    self.feed.log_api_call("anthropic", tokens=1234, cost=0.015, 
+                           request_data=..., response_data=...)
     self.feed.stat("posts_analyzed", 1)  # increment counter
 """
 
@@ -67,11 +68,25 @@ class MonitorFeed:
         self.stat("posts_processed", 1, subclass=subclass)
     
     def log_api_call(self, provider: str, model: str = None, tokens: int = 0, 
-                     cost: float = 0.0, duration: float = 0.0, subclass: str = None):
-        """Log an API call with statistics"""
+                     cost: float = 0.0, duration: float = 0.0, subclass: str = None,
+                     request_data: Dict = None, response_data: Dict = None):
+        """
+        Log an API call with full request/response data
+        
+        Args:
+            provider: API provider (e.g., 'anthropic')
+            model: Model name
+            tokens: Token count
+            cost: Cost in dollars
+            duration: Duration in seconds
+            subclass: Category (e.g., 'screening', 'analysis')
+            request_data: Full request payload including system prompt, messages, etc.
+            response_data: Full response including choices, usage, etc.
+        """
         if not self.enabled:
             return
         
+        # Store in logs table with full payload
         self.storage.add_log(
             monitor=self.monitor_name,
             subclass=subclass or "api",
@@ -84,6 +99,8 @@ class MonitorFeed:
                 "tokens": tokens,
                 "cost": cost,
                 "duration_sec": duration,
+                "request": request_data or {},
+                "response": response_data or {},
             }
         )
         

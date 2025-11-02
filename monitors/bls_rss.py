@@ -512,8 +512,10 @@ class Monitor(BaseMonitor):
                 created_at=dt.datetime.utcnow().isoformat() + "Z",
                 priority=0,
                 payload={"analyze": True, "text": _compose_prompt(bundle),
-                         "taco_mode": False, "pre_screened": True},
+                        "taco_mode": False, "pre_screened": True},
+                feed=self.feed
             )
+
             self.publish(evt)
             self.state.set(list(bundle_id), STATE_LAST_BUNDLE)
             print("[bls_rss] published bundle")
@@ -532,6 +534,7 @@ class Monitor(BaseMonitor):
                 priority=0,
                 payload={"analyze": True, "text": _compose_prompt(bundle),
                          "taco_mode": False, "pre_screened": True},
+                feed=self.feed
             )
             self.publish(evt)
             self.state.set(True, analyzed_key)

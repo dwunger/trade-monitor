@@ -78,41 +78,44 @@ class Monitor(Monitor):  # type: ignore[misc]
 
     def _screen_with_haiku(self, text: str) -> dict:
         """Use Haiku to screen if post is market-relevant."""
-        if not self.enable_screening or not self.anthropic:
-            return {"is_market_relevant": True, "confidence": 1.0, "reasoning": "screening disabled"}
-        
         try:
             t0 = time.time()
+            
+            # Capture request data
+            system_prompt = "You are a trading assistant screening social media posts. Identify if a post could impact financial markets. Respond with JSON only."
+            user_message = f'''Is this post market-relevant for trading? Consider:
+    - Trade policy, tariffs, regulations
+    - Company mentions (Tesla, Apple, etc.)
+    - Economic policy, Fed, taxes
+    - Major political events affecting markets
+
+    Skip: judge nominations, routine endorsements, celebrations, statistics without market impact.
+
+    Respond JSON: {{"is_market_relevant": true/false, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}
+
+    Post: {text[:500]}'''
+            
             response = self.anthropic.messages.create(
                 model=self.screening_model,
                 max_tokens=200,
                 temperature=0,
-                system="You are a trading assistant screening social media posts. Identify if a post could impact financial markets. Respond with JSON only.",
+                system=system_prompt,
                 messages=[{
                     "role": "user",
-                    "content": f'''Is this post market-relevant for trading? Consider:
-- Trade policy, tariffs, regulations
-- Company mentions (Tesla, Apple, etc.)
-- Economic policy, Fed, taxes
-- Major political events affecting markets
-
-Skip: judge nominations, routine endorsements, celebrations, statistics without market impact.
-
-Respond JSON: {{"is_market_relevant": true/false, "confidence": 0.0-1.0, "reasoning": "brief explanation"}}
-
-Post: {text[:500]}'''
+                    "content": user_message
                 }]
             )
             
             duration = time.time() - t0
             
-            # Extract text
+            # Extract text from response
             response_text = ""
             for block in response.content:
                 if hasattr(block, 'type') and block.type == 'text':
                     response_text += block.text
             
             # Parse JSON
+            import json
             response_text = response_text.strip()
             if response_text.startswith("```"):
                 response_text = re.sub(r"^```[a-zA-Z]*\s*", "", response_text)
@@ -120,17 +123,53 @@ Post: {text[:500]}'''
             
             result = json.loads(response_text)
             
-            # Log to feed
+            # Calculate tokens and cost
             tokens = response.usage.input_tokens + response.usage.output_tokens
-            cost = tokens * 0.25 / 1_000_000  # Haiku pricing
+            cost = tokens * 0.25 / 1_000_000
             
+            # NEW: Capture full request/response for dashboard
+            request_data = {
+                "model": self.screening_model,
+                "max_tokens": 200,
+                "temperature": 0,
+                "system": system_prompt,
+                "messages": [{
+                    "role": "user",
+                    "content": user_message
+                }]
+            }
+            
+            response_data = {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": response_text
+                    }
+                ],
+                "usage": {
+                    "input_tokens": response.usage.input_tokens,
+                    "output_tokens": response.usage.output_tokens,
+                },
+                "stop_reason": response.stop_reason,
+                "model": response.model,
+            }
+            
+            # Add cache info if available
+            if hasattr(response.usage, 'cache_creation_input_tokens'):
+                response_data["usage"]["cache_creation_input_tokens"] = response.usage.cache_creation_input_tokens
+            if hasattr(response.usage, 'cache_read_input_tokens'):
+                response_data["usage"]["cache_read_input_tokens"] = response.usage.cache_read_input_tokens
+            
+            # Log with full data
             self.feed.log_api_call(
                 provider="anthropic",
                 model=self.screening_model,
                 tokens=tokens,
                 cost=cost,
                 duration=duration,
-                subclass="screening"
+                subclass="screening",
+                request_data=request_data,    # NEW
+                response_data=response_data   # NEW
             )
             
             return result

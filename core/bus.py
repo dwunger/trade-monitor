@@ -18,6 +18,7 @@ class Event:
     priority: int = 0
     created_at: Optional[str] = None
     payload: Optional[Dict[str, Any]] = None
+    feed: Optional[Any] = None  # NEW: pass feed object from monitor
 
 
 def make_publisher(cfg, state):
@@ -62,7 +63,7 @@ def make_publisher(cfg, state):
             if t.get("expiration"):
                 line += f" ({t['expiration']})"
             parts.append(line)
-        return "\n".join(parts) or "Signal generated — check details notification"
+        return "\n".join(parts) or "Signal generated – check details notification"
 
     # -------------------------
     # worker: does heavy lifting
@@ -84,7 +85,11 @@ def make_publisher(cfg, state):
                 # --- Branch by event source ---
                 if evt.source == "bls_rss":
                     print("[bus] dispatching macroeconomic analysis to Sonnet", flush=True)
-                    decision = analyzer.analyze_macro(content=text, state=state)
+                    decision = analyzer.analyze_macro(
+                        content=text, 
+                        state=state,
+                        feed=evt.feed  # NEW: pass feed to analyzer
+                    )
                 else:
                     decision = analyzer.analyze_post(
                         content=text,
@@ -92,6 +97,7 @@ def make_publisher(cfg, state):
                         created_at=evt.created_at or "",
                         taco_mode=taco_mode,
                         state=state if taco_mode else None,
+                        feed=evt.feed  # NEW: pass feed to analyzer
                     )
                 # --------------------------------
 
@@ -123,7 +129,7 @@ def make_publisher(cfg, state):
                 quick_signal = _build_quick_signal(decision)
                 _send_async("🚨 TACO EMERGENCY", quick_signal, 2, evt.url)
                 time.sleep(2)
-                _send_async("TACO Analysis — Details", final_message, 0, evt.url)
+                _send_async("TACO Analysis – Details", final_message, 0, evt.url)
             else:
                 _send_async(evt.title, final_message, evt.priority, evt.url)
 
@@ -156,6 +162,6 @@ def make_publisher(cfg, state):
             analysis_q.put_nowait(evt)
             print(f"[bus] queued | src={evt.source} title={evt.title!r} prio={evt.priority}", flush=True)
         except Full:
-            print("[bus] WARNING: analysis queue full — dropping event!", flush=True)
+            print("[bus] WARNING: analysis queue full – dropping event!", flush=True)
 
     return publish
