@@ -63,7 +63,7 @@ def make_publisher(cfg, state):
             if t.get("expiration"):
                 line += f" ({t['expiration']})"
             parts.append(line)
-        return "\n".join(parts) or "Signal generated – check details notification"
+        return "\n".join(parts) or "Signal generated  check details notification"
 
     # -------------------------
     # worker: does heavy lifting
@@ -127,9 +127,9 @@ def make_publisher(cfg, state):
             # Dispatch notifications
             if taco_mode and evt.priority >= 2 and decision and decision.get("tickers"):
                 quick_signal = _build_quick_signal(decision)
-                _send_async("🚨 TACO EMERGENCY", quick_signal, 2, evt.url)
+                _send_async(" TACO EMERGENCY", quick_signal, 2, evt.url)
                 time.sleep(2)
-                _send_async("TACO Analysis – Details", final_message, 0, evt.url)
+                _send_async("TACO Analysis  Details", final_message, 0, evt.url)
             else:
                 _send_async(evt.title, final_message, evt.priority, evt.url)
 
@@ -141,7 +141,7 @@ def make_publisher(cfg, state):
             print(f"[bus] error processing event {evt.source}: {e}", flush=True)
 
         finally:
-            print(f"[bus] ← finished | src={evt.source} prio={evt.priority}", flush=True)
+            print(f"[bus] <- finished | src={evt.source} prio={evt.priority}", flush=True)
 
     # -------------------------
     # worker thread (background)
@@ -162,6 +162,6 @@ def make_publisher(cfg, state):
             analysis_q.put_nowait(evt)
             print(f"[bus] queued | src={evt.source} title={evt.title!r} prio={evt.priority}", flush=True)
         except Full:
-            print("[bus] WARNING: analysis queue full – dropping event!", flush=True)
+            print("[bus] WARNING: analysis queue full  dropping event!", flush=True)
 
     return publish

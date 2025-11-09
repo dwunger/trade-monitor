@@ -52,14 +52,14 @@ class MonitorDashboard:
         
         title_label = tk.Label(
             toolbar, 
-            text="📊 TruthTrader Monitor Dashboard",
+            text=" TruthTrader Monitor Dashboard",
             font=("Arial", 16, "bold"),
             bg=self.bg_color,
             fg="#333333"
         )
         title_label.pack(side=tk.LEFT, padx=10)
         
-        ttk.Button(toolbar, text="🔄 Refresh", command=self.refresh_all).pack(side=tk.RIGHT, padx=5)
+        ttk.Button(toolbar, text=" Refresh", command=self.refresh_all).pack(side=tk.RIGHT, padx=5)
         ttk.Checkbutton(toolbar, text="Auto-refresh", variable=self.auto_refresh).pack(side=tk.RIGHT, padx=5)
         
         self.status_label = tk.Label(toolbar, text="", bg=self.bg_color, fg="#666")
@@ -84,26 +84,26 @@ class MonitorDashboard:
     def _create_dashboard_tab(self, notebook):
         """Create the main dashboard view"""
         dashboard_frame = tk.Frame(notebook, bg=self.bg_color)
-        notebook.add(dashboard_frame, text="📊 Dashboard")
+        notebook.add(dashboard_frame, text=" Dashboard")
         
         # Top metrics bar
         metrics_frame = tk.Frame(dashboard_frame, bg=self.bg_color)
         metrics_frame.pack(fill=tk.X, padx=10, pady=10)
         
         # Create metric cards
-        self.total_posts_card = self._create_metric_card(metrics_frame, "📝 Posts Processed", "0", self.accent_color)
+        self.total_posts_card = self._create_metric_card(metrics_frame, " Posts Processed", "0", self.accent_color)
         self.total_posts_card.pack(side=tk.LEFT, padx=5)
         
-        self.api_calls_card = self._create_metric_card(metrics_frame, "🔌 API Calls", "0", self.success_color)
+        self.api_calls_card = self._create_metric_card(metrics_frame, " API Calls", "0", self.success_color)
         self.api_calls_card.pack(side=tk.LEFT, padx=5)
         
-        self.tokens_card = self._create_metric_card(metrics_frame, "🎯 Tokens Used", "0", self.accent_color)
+        self.tokens_card = self._create_metric_card(metrics_frame, " Tokens Used", "0", self.accent_color)
         self.tokens_card.pack(side=tk.LEFT, padx=5)
         
-        self.cost_card = self._create_metric_card(metrics_frame, "💰 Total Cost", "$0.00", self.success_color)
+        self.cost_card = self._create_metric_card(metrics_frame, " Total Cost", "$0.00", self.success_color)
         self.cost_card.pack(side=tk.LEFT, padx=5)
         
-        self.errors_card = self._create_metric_card(metrics_frame, "⚠️ Errors", "0", self.error_color)
+        self.errors_card = self._create_metric_card(metrics_frame, " Errors", "0", self.error_color)
         self.errors_card.pack(side=tk.LEFT, padx=5)
         
         # Monitor status cards
@@ -169,7 +169,7 @@ class MonitorDashboard:
         
         monitor_label = tk.Label(
             header,
-            text=f"📡 {monitor_name.upper()}",
+            text=f" {monitor_name.upper()}",
             font=("Arial", 12, "bold"),
             bg=self.accent_color,
             fg="white"
@@ -225,7 +225,7 @@ class MonitorDashboard:
                 # Key label
                 key_label = tk.Label(
                     stats_frame,
-                    text=f"  • {key}:",
+                    text=f"  * {key}:",
                     font=("Arial", 9),
                     bg=self.card_bg,
                     fg="#666666"
@@ -265,7 +265,7 @@ class MonitorDashboard:
     def _create_logs_tab(self, notebook):
         """Create detailed logs tab"""
         logs_frame = tk.Frame(notebook, bg=self.bg_color)
-        notebook.add(logs_frame, text="📄 Logs")
+        notebook.add(logs_frame, text=" Logs")
         
         # Filters
         filter_frame = tk.Frame(logs_frame, bg=self.bg_color)
@@ -299,7 +299,7 @@ class MonitorDashboard:
     def _create_stats_tab(self, notebook):
         """Create statistics tab"""
         stats_frame = tk.Frame(notebook, bg=self.bg_color)
-        notebook.add(stats_frame, text="📈 Statistics")
+        notebook.add(stats_frame, text=" Statistics")
         
         self.stats_text = scrolledtext.ScrolledText(stats_frame, wrap=tk.WORD,
                                                      font=("Consolas", 10), bg="#1e1e1e", fg="#d4d4d4")
@@ -390,12 +390,12 @@ class MonitorDashboard:
             if log['data'] and log['data'].get('type') in ['api_call', 'post']:
                 data = log['data']
                 if data['type'] == 'api_call':
-                    detail = f"  → {data.get('tokens', 0)} tokens, ${data.get('cost', 0):.4f}, {data.get('duration_sec', 0):.1f}s\n"
+                    detail = f"  -> {data.get('tokens', 0)} tokens, ${data.get('cost', 0):.4f}, {data.get('duration_sec', 0):.1f}s\n"
                     self.logs_text.insert(tk.END, detail, "INFO")
                 elif data['type'] == 'post':
                     preview = data.get('preview', '')[:80]
                     if preview:
-                        self.logs_text.insert(tk.END, f"  → {preview}...\n", "INFO")
+                        self.logs_text.insert(tk.END, f"  -> {preview}...\n", "INFO")
         
         self.logs_text.config(state=tk.DISABLED)
         self.logs_text.see(tk.END)

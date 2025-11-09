@@ -64,5 +64,5 @@ class State:
                     except Exception:
                         pass
         # If we get here, we failed to persist after many retries
-        # Don't raise—avoid killing the app; last good in-memory value remains.
+        # Don't raiseavoid killing the app; last good in-memory value remains.
         # You can add logging here if desired.

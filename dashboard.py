@@ -558,9 +558,9 @@ def create_templates():
         <p>No monitors have reported data yet.</p>
         <p>Make sure:</p>
         <ul style="list-style: none; margin-top: 1rem;">
-            <li>• ENABLE_MONITOR_FEEDS=true in your .env file</li>
-            <li>• Monitors are running (python main.py)</li>
-            <li>• Monitors are actively processing posts</li>
+            <li>* ENABLE_MONITOR_FEEDS=true in your .env file</li>
+            <li>* Monitors are running (python main.py)</li>
+            <li>* Monitors are actively processing posts</li>
         </ul>
     </div>
 {% else %}
@@ -617,7 +617,7 @@ def create_templates():
 
 {% block content %}
 <div style="margin-bottom: 2rem;">
-    <a href="/" style="color: #667eea; text-decoration: none; font-weight: 600;">← Back to All Monitors</a>
+    <a href="/" style="color: #667eea; text-decoration: none; font-weight: 600;"><- Back to All Monitors</a>
 </div>
 
 <h2 style="margin-bottom: 1.5rem; color: #333;">{{ monitor_name.upper() }}</h2>
@@ -878,7 +878,7 @@ setInterval(function() {
 
 {% block content %}
 <div style="margin-bottom: 2rem;">
-    <a href="/monitor/{{ log.monitor }}" style="color: #667eea; text-decoration: none; font-weight: 600;">← Back to {{ log.monitor.upper() }}</a>
+    <a href="/monitor/{{ log.monitor }}" style="color: #667eea; text-decoration: none; font-weight: 600;"><- Back to {{ log.monitor.upper() }}</a>
 </div>
 
 <h2 style="margin-bottom: 1.5rem; color: #333;">API Call Details</h2>

@@ -40,7 +40,7 @@ def run_monitor_loop(MonitorCls, publish, cfg: Dict[str, Any], ctx: Dict[str, An
             backoff = min(120, backoff * 2)
             for i in range(backoff, 0, -5):
                 with _print_lock:
-                    print(f"[runner:{name}] restart in {i}s …", flush=True)
+                    print(f"[runner:{name}] restart in {i}s ...", flush=True)
                 time.sleep(min(5, i))
             continue
 
@@ -58,7 +58,7 @@ def main():
             from core.monitor_feed import FeedStorage, MonitorFeed
             feed_db = os.getenv("MONITOR_FEEDS_DB", ".monitor_feeds.db")
             feed_storage = FeedStorage(feed_db)
-            print(f"[main] Monitor feeds ENABLED → {feed_db}", flush=True)
+            print(f"[main] Monitor feeds ENABLED -> {feed_db}", flush=True)
         except Exception as e:
             print(f"[main] Failed to initialize feeds: {e}", file=sys.stderr)
             feeds_enabled = False
@@ -94,7 +94,7 @@ def main():
     # One-time startup ping
     try:
         notify_pushover(
-            title="TruthTrader – service started",
+            title="TruthTrader  service started",
             message=f"Monitors: {names_list}\nModel: {cfg['MODEL']}\nReasoning: {cfg['REASONING_MODEL']}\nFeeds: {'ON' if feeds_enabled else 'OFF'}\nGUI: {'ON' if gui_enabled else 'OFF'}",
             priority=0,
             token=cfg.get("PUSHOVER_TOKEN"),
@@ -147,7 +147,7 @@ def main():
             if status_changed or time_for_report:
                 with _print_lock:
                     for t in threads:
-                        status = "✓ alive" if t.is_alive() else "✗ DEAD"
+                        status = "OK  alive" if t.is_alive() else " DEAD"
                         print(f"[watchdog] {t.name} {status}", flush=True)
                 last_status = current_status.copy()
                 last_full_report = time.time()

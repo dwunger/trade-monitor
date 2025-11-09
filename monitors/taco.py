@@ -8,7 +8,7 @@ from .base import Monitor
 from core.bus import Event
 
 VERSION = "taco/2.2.0-threadsafe"
-print(f"[taco] module file → {inspect.getfile(inspect.currentframe())}", flush=True)
+print(f"[taco] module file -> {inspect.getfile(inspect.currentframe())}", flush=True)
 
 class Monitor(Monitor):
     name = "taco"
@@ -33,6 +33,7 @@ class Monitor(Monitor):
         self.screening_model = os.getenv("TACO_SCREENING_MODEL", "claude-haiku-4-5-20251001")
         self.state = ctx.get("state")
         self.state_key_last = "taco:last_seen_id"
+        self.state_key_processed = "taco:processed_posts"  # Track what we've analyzed
         self.config = config
         
         self._print(f"initialized for @{self.handle} | poll={self.poll_seconds}s | screening={self.screening_model}")
@@ -46,6 +47,26 @@ class Monitor(Monitor):
         if "<" in s and ">" in s:
             s = re.sub(r"<[^>]+>", " ", s)
         return re.sub(r"\s+", " ", s).strip()
+    
+    def _already_processed(self, post_id: str) -> bool:
+        """Check if we've already processed this post"""
+        processed = self.state.get(self.state_key_processed, default={}) or {}
+        return post_id in processed
+    
+    def _mark_processed(self, post_id: str):
+        """Mark post as processed and clean old entries (keep last 100)"""
+        processed = self.state.get(self.state_key_processed, default={}) or {}
+        if not isinstance(processed, dict):
+            processed = {}
+        
+        processed[post_id] = time.time()
+        
+        # Keep only last 100 posts to prevent unbounded growth
+        if len(processed) > 100:
+            sorted_items = sorted(processed.items(), key=lambda x: x[1])
+            processed = dict(sorted_items[-100:])
+        
+        self.state.set(processed, self.state_key_processed)
     
     def _screen_with_haiku(self, text: str) -> dict:
         """Use Haiku to intelligently screen if post is tariff-related."""
@@ -103,15 +124,15 @@ class Monitor(Monitor):
             return {"is_tariff_related": is_related, "confidence": 0.5, "reasoning": "fallback"}
     
     def run(self) -> None:
-        self._print(f"RUN START – {VERSION}")
-        self.feed.log(f"Monitor starting – {VERSION}", subclass="lifecycle")
+        self._print(f"RUN START - {VERSION}")
+        self.feed.log(f"Monitor starting - {VERSION}", subclass="lifecycle")
         
         last_seen: Optional[str] = self.state.get(self.state_key_last, default=None)
         self._print(f"Monitoring @{self.handle} for tariff posts | last_seen={last_seen}")
         
         # Bootstrap
         if not last_seen:
-            self._print("Bootstrap → fetching recent posts")
+            self._print("Bootstrap -> fetching recent posts")
             self.feed.log("Bootstrap: fetching initial posts", subclass="lifecycle")
             
             try:
@@ -137,7 +158,7 @@ class Monitor(Monitor):
                             url = latest.get("url") or f"https://truthsocial.com/@{self.handle}/{latest.get('id')}"
                             created_at = latest.get("created_at") or ""
                             
-                            self._print(f"✓ Bootstrap: TARIFF POST (conf={screen_result['confidence']:.2f})")
+                            self._print(f"OK Bootstrap: TARIFF POST (conf={screen_result['confidence']:.2f})")
                             self.feed.log(
                                 f"Bootstrap: tariff post detected (conf={screen_result['confidence']:.2f})",
                                 subclass="screening",
@@ -160,7 +181,7 @@ class Monitor(Monitor):
                             )
                             self.publish(evt)
                         else:
-                            self._print(f"✗ Bootstrap: not tariff-related (conf={screen_result['confidence']:.2f})")
+                            self._print(f"[X] Bootstrap: not tariff-related (conf={screen_result['confidence']:.2f})")
                     
                     last_seen = latest["id"]
                     self.state.set(last_seen, self.state_key_last)
@@ -206,10 +227,18 @@ class Monitor(Monitor):
                     post_delay = self.config.get("POST_PROCESS_DELAY", 2.0)
                     
                     for post in reversed(new_posts):
+                        pid = post.get("id")
+                        
+                        # Skip if already processed (handles overlap with truth_social)
+                        if self._already_processed(pid):
+                            self._print(f"Skipping already processed post {pid}")
+                            continue
+                        
                         raw = post.get("content") or post.get("text") or ""
                         text = self._strip_html(raw)
                         
                         if not text:
+                            self._mark_processed(pid)
                             continue
                         
                         # Log post to feed
@@ -222,7 +251,7 @@ class Monitor(Monitor):
                             url = post.get("url") or f"https://truthsocial.com/@{self.handle}/{post.get('id')}"
                             created_at = post.get("created_at") or ""
                             
-                            self._print(f"✓ TARIFF POST (conf={screen_result['confidence']:.2f}) → TACO analysis")
+                            self._print(f"[OK] TARIFF POST (conf={screen_result['confidence']:.2f}) -> TACO analysis")
                             self.feed.log(
                                 f"Tariff post detected (conf={screen_result['confidence']:.2f})",
                                 subclass="screening",
@@ -249,19 +278,22 @@ class Monitor(Monitor):
                             if post_delay > 0:
                                 time.sleep(post_delay)
                         else:
-                            self._print(f"✗ Not tariff-related (conf={screen_result['confidence']:.2f})")
+                            self._print(f"[X] Not tariff-related (conf={screen_result['confidence']:.2f})")
                             self.feed.log(
                                 f"Post skipped (conf={screen_result['confidence']:.2f})",
                                 subclass="screening",
                                 data={"reasoning": screen_result['reasoning']}
                             )
                         
-                        pid = post.get("id")
+                        # Mark as processed regardless of whether we analyzed it
+                        self._mark_processed(pid)
+                        
+                        # Update last_seen for API pagination
                         if pid and (not last_seen or pid > last_seen):
                             last_seen = pid
                             self.state.set(last_seen, self.state_key_last)
                 else:
-                    self._print(f"No new posts")
+                    self._print("No new posts")
                 
                 # Idle
                 self._print(f"Idle {self.poll_seconds}s")

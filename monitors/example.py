@@ -1,4 +1,4 @@
-﻿import time
+import time
 from typing import Optional
 from core.bus import Event, publish
 

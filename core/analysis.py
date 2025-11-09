@@ -1,4 +1,4 @@
-import os, re, json
+import os, re, json, time
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta
 from anthropic import Anthropic, BadRequestError
@@ -33,7 +33,7 @@ def summarize_trade(decision: Dict[str, Any]) -> str:
     # PRIORITY 1: TRADING SIGNALS (most critical, always show)
     tix = decision.get("tickers", []) or []
     if tix:
-        parts.append("🎯 SIGNALS:")
+        parts.append(" SIGNALS:")
         for t in tix:
             action = t.get('action', 'HOLD')
             symbol = t.get('symbol', '?')
@@ -65,7 +65,7 @@ def summarize_trade(decision: Dict[str, Any]) -> str:
     # PRIORITY 2: SENTIMENT + CONFIDENCE (quick context)
     sentiment = decision.get('sentiment', 'NEUTRAL')
     confidence = decision.get('confidence', 0.0)
-    parts.append(f"📊 {sentiment} (conf {confidence:.2f})")
+    parts.append(f" {sentiment} (conf {confidence:.2f})")
     parts.append("")
     
     # PRIORITY 3: ANALYSIS (truncate aggressively if needed)
@@ -85,7 +85,7 @@ def summarize_trade(decision: Dict[str, Any]) -> str:
     # PRIORITY 4: SOURCES (limit to 2, truncate titles)
     srcs = decision.get("sources", []) or []
     if srcs:
-        parts.append("\n📚 Sources:")
+        parts.append("\n Sources:")
         for s in srcs[:2]:  # Only show first 2
             title = s.get('title', 'source')[:40]  # Max 40 chars
             parts.append(f"* {title}")
@@ -122,7 +122,7 @@ TACO PATTERN SUMMARY (Nov 2024 - Oct 2025):
 - Largest crypto liquidation: Oct 10, 2025 - $19B after 100% China tariff threat
 
 HIGH WALK-BACK PROBABILITY SIGNALS:
-- Tariff rates ≥100% (rarely implemented as announced)
+- Tariff rates 100% (rarely implemented as announced)
 - Allies targeted (Mexico, Canada, EU, Japan) vs China
 - Consumer goods mentioned (iPhones, toys, retail)
 - After-hours/weekend announcements
@@ -132,7 +132,7 @@ HIGH WALK-BACK PROBABILITY SIGNALS:
 LOW WALK-BACK PROBABILITY (Likely to Implement):
 - China specifically targeted (Trump maintains pressure)
 - "National security" framing (legal authority, harder to reverse)
-- Moderate rates ≤25%
+- Moderate rates 25%
 - Steel/aluminum/copper (sector-specific, domestic industry support)
 - Retaliation language
 
@@ -180,8 +180,8 @@ TRADING SIGNALS TO GENERATE:
 - Priority: 0 (Normal notification)
 
 SPEED IS EVERYTHING:
-- After-hours announcements → Position PUTS in pre-market
-- "BE COOL" posts → Execute CALLS within 15 minutes
+- After-hours announcements -> Position PUTS in pre-market
+- "BE COOL" posts -> Execute CALLS within 15 minutes
 - Options decay fast (theta) - timing is critical
 - Set tight stops: -30% on PUTS, -20% on CALLS
 
@@ -265,7 +265,7 @@ class Analyzer:
             if "does not exist" in str(e).lower() or "model" in str(e).lower():
                 for fb in self.cfg["REASONING_FALLBACKS"]:
                     try:
-                        print(f"[anthropic] fallback → model={fb}")
+                        print(f"[anthropic] fallback -> model={fb}")
                         return self.client.messages.create(model=fb, **kwargs)
                     except BadRequestError:
                         continue
@@ -359,7 +359,7 @@ class Analyzer:
                 context_note = f"\n\n{self._get_recent_taco_context(state)}"
 
             tools = self._web_search_tool_config()
-            print(f"[anthropic] request 1 → model={self.cfg['MODEL']} | taco_mode={taco_mode} | tools={'web_search' if tools else 'none'} | url={url}")
+            print(f"[anthropic] request 1 -> model={self.cfg['MODEL']} | taco_mode={taco_mode} | tools={'web_search' if tools else 'none'} | url={url}")
             
             prompt = f"Analyze this Truth Social post"
             if taco_mode:
@@ -477,7 +477,7 @@ class Analyzer:
             
             if should_escalate and not is_immediate_buy:
                 tools2 = self._web_search_tool_config()
-                print(f"[anthropic] request 2 (escalation) → model={self.cfg['REASONING_MODEL']} | tools={'web_search' if tools2 else 'none'} | url={url}")
+                print(f"[anthropic] request 2 (escalation) -> model={self.cfg['REASONING_MODEL']} | tools={'web_search' if tools2 else 'none'} | url={url}")
                 
                 # Build the escalation message
                 user_message2 = (
@@ -606,7 +606,7 @@ class Analyzer:
 
         system_msg = (
             "You are a macroeconomic analyst. You are receiving raw data from official "
-            "Bureau of Labor Statistics (BLS) releases — CPI, PPI, and NFP. "
+            "Bureau of Labor Statistics (BLS) releases  CPI, PPI, and NFP. "
             "Determine how these reports influence U.S. Treasuries and interest rates. "
             "Focus on treasury ETFs like TLT.\n\n"
             "Output a concise professional summary with trade recommendations and reasoning. "
@@ -636,9 +636,9 @@ class Analyzer:
         else:
             thinking_kwargs = {"max_tokens": 8192}
 
-        print(f"[anthropic] macro request → model={self.cfg['MODEL']} | thinking={'on' if 'thinking' in thinking_kwargs else 'off'}")
+        print(f"[anthropic] macro request -> model={self.cfg['MODEL']} | thinking={'on' if 'thinking' in thinking_kwargs else 'off'}")
 
-        # NOTE: No web tools here — inputs are the BLS payloads bundled by the monitor.
+        # NOTE: No web tools here  inputs are the BLS payloads bundled by the monitor.
         try:
             r1 = self._messages_create_safe(
                 model=self.cfg["MODEL"],

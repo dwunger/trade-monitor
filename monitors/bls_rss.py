@@ -6,14 +6,14 @@ Tracks CPI, PPI, and NFP (CES) for new economic releases.
 
 Features
 --------
-✓ CPI / PPI via RSS with full text extraction
-✓ NFP via CES0000000001 (Total Nonfarm, seasonally adjusted)
-✓ Adaptive time-to-release polling (seconds-fast around 8:30 ET)
-✓ Cross-context bundling for macro analysis
-✓ User-Agent spoofing for reliability
-✓ Priority-1 pre-release reminders (24h before)
-✓ Priority-1 delay alerts (10 min late)
-✓ Logs next scheduled release dates on startup
+OK  CPI / PPI via RSS with full text extraction
+OK  NFP via CES0000000001 (Total Nonfarm, seasonally adjusted)
+OK  Adaptive time-to-release polling (seconds-fast around 8:30 ET)
+OK  Cross-context bundling for macro analysis
+OK  User-Agent spoofing for reliability
+OK  Priority-1 pre-release reminders (24h before)
+OK  Priority-1 delay alerts (10 min late)
+OK  Logs next scheduled release dates on startup
 """
 
 import os
@@ -189,7 +189,7 @@ def _compose_prompt(bundle: Dict[str, dict]) -> str:
 # --------------------------------------------------------------------
 def _fetch_latest_nfp() -> tuple[Optional[str], Optional[dict]]:
     """
-    Fetch CES0000000001 — total nonfarm, seasonally adjusted.
+    Fetch CES0000000001  total nonfarm, seasonally adjusted.
     Adds momentum, trend strength, and policy signal context.
     """
     try:
@@ -246,9 +246,9 @@ def _fetch_latest_nfp() -> tuple[Optional[str], Optional[dict]]:
 
         # Fed policy interpretation
         if trend in ("STRONG", "MODERATE") and momentum > 0:
-            fed_signal = "Labor market still hot → cuts less likely near term."
+            fed_signal = "Labor market still hot -> cuts less likely near term."
         elif trend in ("SLOWING", "WEAK") and momentum < 0:
-            fed_signal = "Hiring momentum cooling → supports dovish bias."
+            fed_signal = "Hiring momentum cooling -> supports dovish bias."
         else:
             fed_signal = "Automated evaluation not available."
 
@@ -257,7 +257,7 @@ def _fetch_latest_nfp() -> tuple[Optional[str], Optional[dict]]:
         summary_text = (
             f"Nonfarm payrolls trend ({latest_ym}): {trend}\n"
             f"3-mo avg change: {avg3:,.0f}k | 6-mo avg: {avg6:,.0f}k | Momentum: {momentum:+.0f}k\n"
-            f"Latest change: {mom_change:+,}k (prior {prev_val:,} → {latest_val:,})\n"
+            f"Latest change: {mom_change:+,}k (prior {prev_val:,} -> {latest_val:,})\n"
             f"Fed interpretation: {fed_signal}"
         )
 
@@ -266,7 +266,7 @@ def _fetch_latest_nfp() -> tuple[Optional[str], Optional[dict]]:
         data_fmt = [f"{m}: {v:,}" for m, v in last6]
 
         payload = {
-            "title": "Nonfarm Payroll Employment — Trend Analysis (CES0000000001, SA)",
+            "title": "Nonfarm Payroll Employment  Trend Analysis (CES0000000001, SA)",
             "link": CES_TOTAL_URL,
             "published": dt.datetime.utcnow().isoformat() + "Z",
             "guid": guid,
@@ -324,7 +324,7 @@ def _next_from_schedule_page(url: str, tz: Optional[ZoneInfo]) -> Optional[str]:
             continue
 
         date_str, time_str = tds[1], tds[2]
-        # normalize abbreviations like "Nov." → "Nov"
+        # normalize abbreviations like "Nov." -> "Nov"
         date_str = re.sub(r"\.", "", date_str.strip())
         time_str = time_str.strip().upper().replace(".", "")
         if "8:30" not in time_str:
@@ -507,7 +507,7 @@ class Monitor(BaseMonitor):
             bundle = {k: stash[k]["payload"] for k in ("CPI", "PPI", "NFP")}
             evt = Event(
                 source=self.name,
-                title="BLS bundle — analysis",
+                title="BLS bundle  analysis",
                 message="Analyzing CPI, PPI, and NFP...",
                 created_at=dt.datetime.utcnow().isoformat() + "Z",
                 priority=0,
@@ -528,7 +528,7 @@ class Monitor(BaseMonitor):
             bundle = {feed_name: payload, **_load_recent_logs(feed_name)}
             evt = Event(
                 source=self.name,
-                title=f"BLS {feed_name} — analysis",
+                title=f"BLS {feed_name}  analysis",
                 message=f"Analyzing {feed_name} release...",
                 created_at=dt.datetime.utcnow().isoformat() + "Z",
                 priority=0,
@@ -577,7 +577,7 @@ class Monitor(BaseMonitor):
                 self.state.set(guid,last_guid_key)
                 triggered=True
                 path=_save_payload(name,guid,payload)
-                print(f"[bls_rss] NEW {name} → {guid} | saved {path}")
+                print(f"[bls_rss] NEW {name} -> {guid} | saved {path}")
                 stash=self.state.get(STATE_STASH,default={}) or {}
                 stash[name]={"guid":guid,"payload":payload,"ts":dt.datetime.utcnow().isoformat()}
                 self.state.set(stash,STATE_STASH)
@@ -600,7 +600,7 @@ class Monitor(BaseMonitor):
                     delta=(rel-dt.datetime.now(dt.timezone.utc)).total_seconds()
                     iv=self._compute_poll_interval(delta)
                     intervals.append(iv)
-                    print(f"[bls_rss] poll {name}: delta={self._fmt_delta(delta)} → interval={int(iv)}s")
+                    print(f"[bls_rss] poll {name}: delta={self._fmt_delta(delta)} -> interval={int(iv)}s")
                 except Exception as e:
                     intervals.append(3600)
                     print(f"[bls_rss] poll {name}: failed {e}")
